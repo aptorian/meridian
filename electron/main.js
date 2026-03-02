@@ -120,7 +120,6 @@ function createWindow() {
     frame: false,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 16, y: 12 },
-    transparent: process.platform === "win32",
     backgroundColor: "#1a1a1e",
     show: false,
     webPreferences: {
@@ -182,6 +181,23 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// --- IPC handlers for custom window controls (Windows) ---
+ipcMain.on("window-minimize", () => {
+  if (mainWindow) mainWindow.minimize();
+});
+ipcMain.on("window-maximize", () => {
+  if (mainWindow) {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  }
+});
+ipcMain.on("window-close", () => {
+  if (mainWindow) mainWindow.close();
+});
+ipcMain.handle("window-is-maximized", () => {
+  return mainWindow ? mainWindow.isMaximized() : false;
+});
 
 app.whenReady().then(createWindow);
 

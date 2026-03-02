@@ -877,6 +877,7 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
 
 const isElectron = typeof window !== "undefined" && !!window.electronAPI;
 const isMacElectron = isElectron && window.electronAPI.platform === "darwin";
+const isWinElectron = isElectron && window.electronAPI.platform === "win32";
 
 export default function Meridian() {
   const [blocks, setBlocks] = useState(() => {
@@ -1373,7 +1374,6 @@ export default function Meridian() {
       overflow: isVertical ? "hidden" : "hidden",
       transition: "background 0.5s ease",
       userSelect: "none",
-      ...(isElectron && window.electronAPI.platform === "win32" ? { borderRadius: 10, overflow: "hidden" } : {}),
     }}>
       {/* Top bar — also serves as Electron drag region */}
       <div style={{
@@ -1383,7 +1383,7 @@ export default function Meridian() {
         paddingTop: isMacElectron ? 14 : (isElectron ? 6 : 12),
         paddingBottom: isElectron ? 6 : 12,
         paddingLeft: isMacElectron ? 96 : 24,
-        paddingRight: 24,
+        paddingRight: isWinElectron ? 0 : 24,
         flexShrink: 0,
         WebkitAppRegion: isElectron ? "drag" : undefined,
       }}>
@@ -1399,106 +1399,132 @@ export default function Meridian() {
         </div>
 
         {/* Right-side controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", WebkitAppRegion: "no-drag" }}>
-          {/* Theme toggle — cycles light → dark → ink */}
-          <div
-            onClick={() => setTheme((prev) => prev === "light" ? "dark" : prev === "dark" ? "ink" : "light")}
-            style={{
-              width: 32,
-              height: 32,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "50%",
-              transition: "background 0.3s ease",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
-            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
-              {theme === "light" ? (
-                <>
-                  <circle cx="12" cy="12" r="5" />
-                  <line x1="12" y1="1" x2="12" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="23" />
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                  <line x1="1" y1="12" x2="3" y2="12" />
-                  <line x1="21" y1="12" x2="23" y2="12" />
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                </>
-              ) : theme === "dark" ? (
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              ) : (
-                <path d="M12 2C12 2 8 9 8 13a4 4 0 0 0 8 0c0-4-4-11-4-11z" />
-              )}
-            </svg>
-          </div>
-
-          {/* Settings gear */}
-          <div
-            onClick={() => setShowSettings((prev) => !prev)}
-            style={{
-              width: 32, height: 32, cursor: "pointer", display: "flex",
-              alignItems: "center", justifyContent: "center", borderRadius: "50%",
-              transition: "background 0.3s ease",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
-            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </div>
-
-          {/* Padlock toggle - long press */}
-          <div
-            onMouseDown={startLongPress}
-            onMouseUp={endLongPress}
-            onMouseLeave={endLongPress}
-            style={{
-              position: "relative",
-              width: 36,
-              height: 36,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            {/* Progress ring */}
-            <svg
-              width="36"
-              height="36"
-              style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}
+        <div style={{ display: "flex", alignItems: "center", WebkitAppRegion: "no-drag" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginRight: isWinElectron ? 8 : 0 }}>
+            {/* Theme toggle — cycles light → dark → ink */}
+            <div
+              onClick={() => setTheme((prev) => prev === "light" ? "dark" : prev === "dark" ? "ink" : "light")}
+              style={{
+                width: 32, height: 32, cursor: "pointer", display: "flex",
+                alignItems: "center", justifyContent: "center", borderRadius: "50%",
+                transition: "background 0.3s ease",
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
-              <circle
-                cx="18" cy="18" r="15"
-                fill="none"
-                stroke={longPressProgress > 0 ? (isLocked ? t.progressRingLocked : t.progressRingUnlocked) : "transparent"}
-                strokeWidth="2"
-                strokeDasharray={`${longPressProgress * 94.25} 94.25`}
-                style={{ transition: longPressProgress === 0 ? "stroke 0.2s" : "none" }}
-              />
-            </svg>
-            {/* Lock icon */}
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={isLocked ? t.lockStrokeLocked : t.lockStrokeUnlocked} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.3s", position: "relative", zIndex: 1 }}>
-              {isLocked ? (
-                <>
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </>
-              ) : (
-                <>
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-                </>
-              )}
-            </svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
+                {theme === "light" ? (
+                  <>
+                    <circle cx="12" cy="12" r="5" />
+                    <line x1="12" y1="1" x2="12" y2="3" />
+                    <line x1="12" y1="21" x2="12" y2="23" />
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                    <line x1="1" y1="12" x2="3" y2="12" />
+                    <line x1="21" y1="12" x2="23" y2="12" />
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                  </>
+                ) : theme === "dark" ? (
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                ) : (
+                  <path d="M12 2C12 2 8 9 8 13a4 4 0 0 0 8 0c0-4-4-11-4-11z" />
+                )}
+              </svg>
+            </div>
+
+            {/* Settings gear */}
+            <div
+              onClick={() => setShowSettings((prev) => !prev)}
+              style={{
+                width: 32, height: 32, cursor: "pointer", display: "flex",
+                alignItems: "center", justifyContent: "center", borderRadius: "50%",
+                transition: "background 0.3s ease",
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </div>
+
+            {/* Padlock toggle - long press */}
+            <div
+              onMouseDown={startLongPress}
+              onMouseUp={endLongPress}
+              onMouseLeave={endLongPress}
+              style={{
+                position: "relative", width: 36, height: 36, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              <svg width="36" height="36" style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}>
+                <circle cx="18" cy="18" r="15" fill="none"
+                  stroke={longPressProgress > 0 ? (isLocked ? t.progressRingLocked : t.progressRingUnlocked) : "transparent"}
+                  strokeWidth="2" strokeDasharray={`${longPressProgress * 94.25} 94.25`}
+                  style={{ transition: longPressProgress === 0 ? "stroke 0.2s" : "none" }}
+                />
+              </svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={isLocked ? t.lockStrokeLocked : t.lockStrokeUnlocked} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.3s", position: "relative", zIndex: 1 }}>
+                {isLocked ? (
+                  <><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>
+                ) : (
+                  <><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></>
+                )}
+              </svg>
+            </div>
           </div>
+
+          {/* Windows Electron: custom window controls */}
+          {isWinElectron && (
+            <div style={{ display: "flex", alignItems: "stretch" }}>
+              {/* Minimize */}
+              <div
+                onClick={() => window.electronAPI.minimize()}
+                style={{
+                  width: 46, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
+                  cursor: "pointer", transition: "background 0.15s",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+              >
+                <svg width="10" height="1" viewBox="0 0 10 1">
+                  <line x1="0" y1="0.5" x2="10" y2="0.5" stroke={t.toggleIcon} strokeWidth="1" />
+                </svg>
+              </div>
+              {/* Maximize / Restore */}
+              <div
+                onClick={() => window.electronAPI.maximize()}
+                style={{
+                  width: 46, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
+                  cursor: "pointer", transition: "background 0.15s",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke={t.toggleIcon} strokeWidth="1">
+                  <rect x="0.5" y="0.5" width="9" height="9" />
+                </svg>
+              </div>
+              {/* Close */}
+              <div
+                onClick={() => window.electronAPI.close()}
+                style={{
+                  width: 46, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
+                  cursor: "pointer", transition: "background 0.15s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#e81123"; e.currentTarget.querySelector("svg").style.stroke = "#fff"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.querySelector("svg").style.stroke = t.toggleIcon; }}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" stroke={t.toggleIcon} strokeWidth="1.2" style={{ transition: "stroke 0.15s" }}>
+                  <line x1="0" y1="0" x2="10" y2="10" />
+                  <line x1="10" y1="0" x2="0" y2="10" />
+                </svg>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
