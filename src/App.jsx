@@ -2151,7 +2151,7 @@ export default function Meridian() {
                 <div style={{ display: "flex", gap: "8px" }}>
                   {/* Windows download */}
                   <a
-                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-Setup-1.0.0.exe"
+                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-Setup.exe"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -2174,7 +2174,7 @@ export default function Meridian() {
                   </a>
                   {/* macOS download */}
                   <a
-                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-1.0.0.dmg"
+                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian.dmg"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
