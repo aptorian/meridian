@@ -878,6 +878,7 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
 const isElectron = typeof window !== "undefined" && !!window.electronAPI;
 const isMacElectron = isElectron && window.electronAPI.platform === "darwin";
 const isWinElectron = isElectron && window.electronAPI.platform === "win32";
+const userPlatform = /Win/.test(navigator.platform) ? "windows" : /Mac/.test(navigator.platform) ? "mac" : "other";
 
 export default function Meridian() {
   const [blocks, setBlocks] = useState(() => {
@@ -2137,6 +2138,66 @@ export default function Meridian() {
                 </label>
               ))}
             </div>
+
+            {/* Desktop App — hidden inside Electron */}
+            {!isElectron && (
+              <div style={{ borderTop: `1px solid ${t.timelineBorder}`, paddingTop: "20px" }}>
+                <div style={{ color: t.noteText, fontSize: "13px", fontWeight: 500, marginBottom: "8px" }}>
+                  Desktop App
+                </div>
+                <div style={{ color: t.quoteMuted, fontSize: "11px", marginBottom: "12px" }}>
+                  Download Meridian for your desktop
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  {/* Windows download */}
+                  <a
+                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-Setup-1.0.0.exe"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                      padding: "10px 12px", borderRadius: "8px", textDecoration: "none",
+                      border: `1px solid ${t.timelineBorder}`,
+                      background: userPlatform === "windows" ? t.noteBg : "transparent",
+                      color: t.noteText, fontSize: "13px",
+                      fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                      fontWeight: userPlatform === "windows" ? 500 : 400,
+                      transition: "opacity 0.2s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                    onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill={t.noteText}>
+                      <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+                    </svg>
+                    Windows
+                  </a>
+                  {/* macOS download */}
+                  <a
+                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-1.0.0.dmg"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                      padding: "10px 12px", borderRadius: "8px", textDecoration: "none",
+                      border: `1px solid ${t.timelineBorder}`,
+                      background: userPlatform === "mac" ? t.noteBg : "transparent",
+                      color: t.noteText, fontSize: "13px",
+                      fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                      fontWeight: userPlatform === "mac" ? 500 : 400,
+                      transition: "opacity 0.2s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                    onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill={t.noteText}>
+                      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+                    </svg>
+                    macOS
+                  </a>
+                </div>
+              </div>
+            )}
 
             {/* Account */}
             <div style={{ borderTop: `1px solid ${t.timelineBorder}`, paddingTop: "20px" }}>
