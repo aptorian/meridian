@@ -58,6 +58,22 @@ function getValidatedState() {
   return visible ? saved : null;
 }
 
+// --- Single instance lock (required for Windows deep links) ---
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, commandLine) => {
+    // Windows sends the deep link URL as a command-line argument
+    const url = commandLine.find((arg) => arg.startsWith("meridian://"));
+    if (url) handleDeepLink(url);
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 // --- Deep link protocol for OAuth callback ---
 const PROTOCOL = "meridian";
 if (process.defaultApp) {

@@ -28,17 +28,17 @@ const THEMES = {
     bgEdit: "#ebe3d9",
     timelineBg: "rgba(0,0,0,0.03)",
     timelineBorder: "1px solid rgba(0,0,0,0.08)",
-    dateText: "rgba(75,55,40,0.5)",
+    dateText: "rgba(75,55,40,0.65)",
     dateTextEdit: "rgba(75,55,40,0.7)",
-    hourLabel: "rgba(75,55,40,0.3)",
+    hourLabel: "rgba(75,55,40,0.45)",
     hourLabelEdit: "rgba(75,55,40,0.45)",
     hoverPlus: "rgba(75,55,40,0.4)",
     deleteX: "rgba(75,55,40,0.7)",
     inputText: "rgba(60,40,25,0.95)",
     caretColor: "#3b3228",
     blockLabelText: "rgba(60,40,25,0.95)",
-    timeRangeText: "rgba(75,55,40,0.5)",
-    hintText: "rgba(75,55,40,0.2)",
+    timeRangeText: "rgba(75,55,40,0.65)",
+    hintText: "rgba(75,55,40,0.35)",
     blockInsetHighlight: "rgba(255,255,255,0.3)",
     blockEditShadow: "0 1px 4px rgba(0,0,0,0.12)",
     handleColor: "rgba(0,0,0,0.15)",
@@ -60,9 +60,9 @@ const THEMES = {
     toggleHoverBg: "rgba(0,0,0,0.06)",
     noteBg: "rgba(0,0,0,0.02)",
     noteText: "#3b3228",
-    notePlaceholder: "rgba(75,55,40,0.3)",
+    notePlaceholder: "rgba(75,55,40,0.45)",
     noteBorder: "rgba(75,55,40,0.1)",
-    quoteMuted: "rgba(75,55,40,0.55)",
+    quoteMuted: "rgba(75,55,40,0.72)",
   },
   dark: {
     isInk: false,
@@ -114,17 +114,17 @@ const THEMES = {
     bgEdit: "#fafafa",
     timelineBg: "rgba(0,0,0,0.02)",
     timelineBorder: "1px solid rgba(0,0,0,0.12)",
-    dateText: "rgba(0,0,0,0.4)",
+    dateText: "rgba(0,0,0,0.6)",
     dateTextEdit: "rgba(0,0,0,0.6)",
-    hourLabel: "rgba(0,0,0,0.3)",
+    hourLabel: "rgba(0,0,0,0.45)",
     hourLabelEdit: "rgba(0,0,0,0.45)",
     hoverPlus: "rgba(0,0,0,0.4)",
     deleteX: "rgba(0,0,0,0.7)",
     inputText: "rgba(0,0,0,0.9)",
     caretColor: "#1a1a1a",
     blockLabelText: "rgba(0,0,0,0.85)",
-    timeRangeText: "rgba(0,0,0,0.4)",
-    hintText: "rgba(0,0,0,0.2)",
+    timeRangeText: "rgba(0,0,0,0.6)",
+    hintText: "rgba(0,0,0,0.35)",
     blockInsetHighlight: "rgba(255,255,255,0.4)",
     blockEditShadow: "0 1px 4px rgba(0,0,0,0.08)",
     handleColor: "rgba(0,0,0,0.2)",
@@ -146,9 +146,9 @@ const THEMES = {
     toggleHoverBg: "rgba(0,0,0,0.06)",
     noteBg: "rgba(0,0,0,0.02)",
     noteText: "#1a1a1a",
-    notePlaceholder: "rgba(0,0,0,0.25)",
+    notePlaceholder: "rgba(0,0,0,0.4)",
     noteBorder: "rgba(0,0,0,0.1)",
-    quoteMuted: "rgba(0,0,0,0.35)",
+    quoteMuted: "rgba(0,0,0,0.55)",
   },
 };
 
@@ -454,7 +454,7 @@ const DATE_STR = TODAY.toLocaleDateString("en-US", {
   year: "numeric",
 });
 
-function Notepad({ theme: t }) {
+function Notepad({ theme: t, onCloudSave, notesVersion }) {
   const editorRef = useRef(null);
   const saveTimerRef = useRef(null);
   const soundsRef = useRef(null);
@@ -491,7 +491,7 @@ function Notepad({ theme: t }) {
     return () => document.removeEventListener("selectionchange", updateFmtState);
   }, [updateFmtState]);
 
-  // Load saved content
+  // Load saved content (re-runs when cloud data arrives via notesVersion bump)
   useEffect(() => {
     if (editorRef.current) {
       try {
@@ -499,16 +499,16 @@ function Notepad({ theme: t }) {
         if (saved) editorRef.current.innerHTML = saved;
       } catch {}
     }
-  }, []);
+  }, [notesVersion]);
 
   // Preload sounds
   useEffect(() => {
     const sounds = {
-      enter: new Audio("/sounds/enter.wav"),
-      delete: new Audio("/sounds/delete.wav"),
-      space: new Audio("/sounds/space.wav"),
-      key: new Audio("/sounds/key.wav"),
-      key2: new Audio("/sounds/key2.wav"),
+      enter: new Audio("./sounds/enter.wav"),
+      delete: new Audio("./sounds/delete.wav"),
+      space: new Audio("./sounds/space.wav"),
+      key: new Audio("./sounds/key.wav"),
+      key2: new Audio("./sounds/key2.wav"),
     };
     Object.values(sounds).forEach((s) => { s.volume = 0.26; s.preload = "auto"; });
     soundsRef.current = sounds;
@@ -523,7 +523,10 @@ function Notepad({ theme: t }) {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       try {
-        if (editorRef.current) localStorage.setItem(NOTES_KEY, editorRef.current.innerHTML);
+        if (editorRef.current) {
+          localStorage.setItem(NOTES_KEY, editorRef.current.innerHTML);
+          if (onCloudSave) onCloudSave();
+        }
       } catch {}
     }, 500);
   }
@@ -974,6 +977,14 @@ export default function Meridian() {
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
+  useEffect(() => {
+    if (!timelineRef.current) return;
+    const ro = new ResizeObserver(([entry]) => setTimelineWidth(entry.contentRect.width));
+    ro.observe(timelineRef.current);
+    return () => ro.disconnect();
+  }, []);
+  const [timelineWidth, setTimelineWidth] = useState(1200);
+  const [notesVersion, setNotesVersion] = useState(0);
   const timelineRef = useRef(null);
   const longPressRef = useRef(null);
   const longPressAnimRef = useRef(null);
@@ -1044,7 +1055,7 @@ export default function Meridian() {
       } else if (data) {
         // Hydrate state from cloud
         if (Array.isArray(data.blocks)) setBlocks(data.blocks);
-        if (data.notes != null) localStorage.setItem(NOTES_KEY, data.notes);
+        if (data.notes != null) { localStorage.setItem(NOTES_KEY, data.notes); setNotesVersion((v) => v + 1); }
         if (data.theme && THEMES[data.theme]) setTheme(data.theme);
         if (data.dark_variant) setDarkVariant(data.dark_variant);
         if (data.hours_start != null) setHoursStart(data.hours_start);
@@ -1369,8 +1380,10 @@ export default function Meridian() {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: isElectron ? "6px 24px" : "12px 24px",
-        paddingLeft: isMacElectron ? 80 : 24,
+        paddingTop: isMacElectron ? 14 : (isElectron ? 6 : 12),
+        paddingBottom: isElectron ? 6 : 12,
+        paddingLeft: isMacElectron ? 96 : 24,
+        paddingRight: 24,
         flexShrink: 0,
         WebkitAppRegion: isElectron ? "drag" : undefined,
       }}>
@@ -1627,7 +1640,8 @@ export default function Meridian() {
               : theme === "light" ? color.lightBg : color.bg;
             const isEditing = editingBlockId === block.id;
             const blockSpan = block.endSlot - block.startSlot;
-            const isNarrow = blockSpan <= 2;
+            const pixelWidth = (blockSpan / slots) * timelineWidth;
+            const isNarrow = pixelWidth < 80;
             const shouldRotateText = isNarrow && block.title.length > 5;
 
             return (
@@ -1939,7 +1953,7 @@ export default function Meridian() {
             marginBottom: "8px",
             transition: "border-color 0.5s ease",
           }} />
-          <Notepad theme={t} />
+          <Notepad theme={t} onCloudSave={saveToCloud} notesVersion={notesVersion} />
         </div>
       )}
 
