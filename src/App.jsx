@@ -1010,6 +1010,9 @@ export default function Meridian() {
     // Update body bg for flash-prevention consistency
     document.body.style.backgroundColor = t.bgLocked;
     document.body.style.color = t.noteText;
+    // Update favicon for theme
+    const fav = document.getElementById('favicon');
+    if (fav) fav.href = theme === 'dark' ? '/favicon-dark.svg' : '/favicon-light.svg';
   }, [theme, t]);
 
   // Persist dark variant
