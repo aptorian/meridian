@@ -1002,6 +1002,7 @@ export default function Meridian() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const cloudSaveTimer = useRef(null);
+  const lastCloudSave = useRef(0); // timestamp of our last save, to ignore our own realtime events
 
   // Listen for auth state changes
   useEffect(() => {
@@ -1073,6 +1074,7 @@ export default function Meridian() {
     if (!user || !supabase) return;
     if (cloudSaveTimer.current) clearTimeout(cloudSaveTimer.current);
     cloudSaveTimer.current = setTimeout(async () => {
+      lastCloudSave.current = Date.now();
       await supabase.from("user_data").update({
         blocks,
         notes: localStorage.getItem(NOTES_KEY) || "",
@@ -1091,6 +1093,32 @@ export default function Meridian() {
   useEffect(() => {
     saveToCloud();
   }, [saveToCloud]);
+
+  // Realtime sync — listen for changes from other sessions
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const channel = supabase
+      .channel("user_data_sync")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "user_data", filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          // Ignore events from our own saves (within 3s window)
+          if (Date.now() - lastCloudSave.current < 3000) return;
+          const data = payload.new;
+          if (Array.isArray(data.blocks)) setBlocks(data.blocks);
+          if (data.notes != null) { localStorage.setItem(NOTES_KEY, data.notes); setNotesVersion((v) => v + 1); }
+          if (data.theme && THEMES[data.theme]) setTheme(data.theme);
+          if (data.dark_variant) setDarkVariant(data.dark_variant);
+          if (data.hours_start != null) setHoursStart(data.hours_start);
+          if (data.hours_end != null) setHoursEnd(data.hours_end);
+          if (data.muted != null) localStorage.setItem(MUTE_KEY, String(data.muted));
+          if (Array.isArray(data.quote_categories)) setQuoteCategories(data.quote_categories);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
 
   async function signInWithGoogle() {
     if (!supabase) return;
@@ -1210,7 +1238,7 @@ export default function Meridian() {
     const rect = timelineRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const pct = x / rect.width;
-    return Math.max(0, Math.min(slots - 1, Math.round(pct * slots)));
+    return Math.max(0, Math.min(slots, Math.round(pct * slots)));
   }
 
   function getSlotFromY(clientY) {
@@ -1218,7 +1246,7 @@ export default function Meridian() {
     const rect = timelineRef.current.getBoundingClientRect();
     const y = clientY - rect.top;
     const pct = y / rect.height;
-    return Math.max(0, Math.min(slots - 1, Math.round(pct * slots)));
+    return Math.max(0, Math.min(slots, Math.round(pct * slots)));
   }
 
   function getSlotFromPointer(e) {
@@ -1229,7 +1257,7 @@ export default function Meridian() {
   function handleTimelineClick(e) {
     if (isLocked || dragState || resizeState || reorderState) return;
     if (e.target.closest("[data-block]")) return;
-    const slot = getSlotFromPointer(e);
+    const slot = Math.min(getSlotFromPointer(e), slots - 1);
     const empty = findEmptySlot(blocks, slot, slots);
     if (!empty) return;
     const id = String(nextIdRef.current++);
@@ -1251,7 +1279,7 @@ export default function Meridian() {
       setHoveredSlot(null);
       return;
     }
-    const slot = getSlotFromPointer(e);
+    const slot = Math.min(getSlotFromPointer(e), slots - 1);
     const occupied = new Set();
     blocks.forEach((b) => {
       for (let s = b.startSlot; s < b.endSlot; s++) occupied.add(s);
