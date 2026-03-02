@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_Preview__preview_start",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(npx -y acorn --ecma2020 --module --jsx src/App.jsx)",
+      "Bash(npx -y esbuild src/App.jsx --bundle --jsx=automatic --outfile=/dev/null)",
+      "Bash(npx vite build)",
+      "Bash(npm install)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:4173/)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:5173/)"
+    ]
+  }
+}
