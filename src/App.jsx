@@ -872,6 +872,9 @@ function Notepad({ theme: t }) {
   );
 }
 
+const isElectron = typeof window !== "undefined" && !!window.electronAPI;
+const isMacElectron = isElectron && window.electronAPI.platform === "darwin";
+
 export default function Meridian() {
   const [blocks, setBlocks] = useState(() => {
     try {
@@ -997,6 +1000,22 @@ export default function Meridian() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
+
+    // In Electron, listen for OAuth deep link callback
+    if (isElectron && window.electronAPI.onOAuthCallback) {
+      window.electronAPI.onOAuthCallback(async (url) => {
+        // The URL looks like meridian://auth/callback#access_token=...&refresh_token=...
+        const hashIndex = url.indexOf("#");
+        if (hashIndex === -1) return;
+        const params = new URLSearchParams(url.substring(hashIndex + 1));
+        const accessToken = params.get("access_token");
+        const refreshToken = params.get("refresh_token");
+        if (accessToken && refreshToken) {
+          await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+        }
+      });
+    }
+
     return () => subscription.unsubscribe();
   }, []);
 
@@ -1062,6 +1081,18 @@ export default function Meridian() {
 
   async function signInWithGoogle() {
     if (!supabase) return;
+    if (isElectron) {
+      // In Electron, open OAuth in system browser and redirect back via deep link
+      const { data } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: "https://meridian.aptorian.com/auth/callback",
+          skipBrowserRedirect: true,
+        },
+      });
+      if (data?.url) window.open(data.url, "_blank");
+      return;
+    }
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: window.location.origin },
@@ -1331,14 +1362,17 @@ export default function Meridian() {
       overflow: isVertical ? "hidden" : "hidden",
       transition: "background 0.5s ease",
       userSelect: "none",
+      ...(isElectron && window.electronAPI.platform === "win32" ? { borderRadius: 10, overflow: "hidden" } : {}),
     }}>
-      {/* Top bar */}
+      {/* Top bar — also serves as Electron drag region */}
       <div style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "12px 24px",
+        padding: isElectron ? "6px 24px" : "12px 24px",
+        paddingLeft: isMacElectron ? 80 : 24,
         flexShrink: 0,
+        WebkitAppRegion: isElectron ? "drag" : undefined,
       }}>
         <div style={{
           color: isLocked ? t.dateText : t.dateTextEdit,
@@ -1352,7 +1386,7 @@ export default function Meridian() {
         </div>
 
         {/* Right-side controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", WebkitAppRegion: "no-drag" }}>
           {/* Theme toggle — cycles light → dark → ink */}
           <div
             onClick={() => setTheme((prev) => prev === "light" ? "dark" : prev === "dark" ? "ink" : "light")}

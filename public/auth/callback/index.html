@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meridian</title>
+  <style>
+    body {
+      background: #1a1a1e;
+      color: rgba(255,255,255,0.6);
+      font-family: -apple-system, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    p { font-size: 15px; letter-spacing: 0.3px; }
+  </style>
+</head>
+<body>
+  <p>Signed in! You can close this tab.</p>
+  <script>
+    const hash = window.location.hash;
+    if (hash) {
+      window.location.href = "meridian://auth/callback" + hash;
+    }
+  </script>
+</body>
+</html>
