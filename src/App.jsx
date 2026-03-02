@@ -356,16 +356,7 @@ function blocksOverlap(blocks, startSlot, endSlot, excludeId = null) {
   );
 }
 
-const DEFAULT_BLOCKS = [
-  { id: "1", title: "Workout", startSlot: 4, endSlot: 8, colorIndex: 0 },
-  { id: "2", title: "Read", startSlot: 8, endSlot: 10, colorIndex: 3 },
-  { id: "3", title: "Sit", startSlot: 10, endSlot: 12, colorIndex: 3 },
-  { id: "4", title: "Breakfast", startSlot: 12, endSlot: 16, colorIndex: 3 },
-  { id: "5", title: "Work Meeting", startSlot: 18, endSlot: 26, colorIndex: 4 },
-  { id: "6", title: "Deep Work Block", startSlot: 26, endSlot: 34, colorIndex: 4 },
-  { id: "7", title: "Coffee w/ John", startSlot: 34, endSlot: 38, colorIndex: 1 },
-  { id: "8", title: "Dinner", startSlot: 44, endSlot: 48, colorIndex: 5 },
-];
+const DEFAULT_BLOCKS = [];
 
 const STOIC_QUOTES = [
   { text: "It is not that we have a short time to live, but that we waste a great deal of it.", author: "Seneca" },
