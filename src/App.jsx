@@ -2196,6 +2196,9 @@ export default function Meridian() {
                     macOS
                   </a>
                 </div>
+                <div style={{ color: t.quoteMuted, fontSize: "10px", marginTop: "6px", opacity: 0.7 }}>
+                  macOS: right-click the app → Open on first launch
+                </div>
               </div>
             )}
 
