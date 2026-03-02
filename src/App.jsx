@@ -989,6 +989,7 @@ export default function Meridian() {
 
   // Listen for auth state changes
   useEffect(() => {
+    if (!supabase) { setAuthLoading(false); return; }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setAuthLoading(false);
@@ -1001,7 +1002,7 @@ export default function Meridian() {
 
   // Load cloud data on login
   useEffect(() => {
-    if (!user) return;
+    if (!user || !supabase) return;
     (async () => {
       const { data, error } = await supabase
         .from("user_data")
@@ -1037,7 +1038,7 @@ export default function Meridian() {
 
   // Debounced cloud save
   const saveToCloud = useCallback(() => {
-    if (!user) return;
+    if (!user || !supabase) return;
     if (cloudSaveTimer.current) clearTimeout(cloudSaveTimer.current);
     cloudSaveTimer.current = setTimeout(async () => {
       await supabase.from("user_data").update({
@@ -1060,6 +1061,7 @@ export default function Meridian() {
   }, [saveToCloud]);
 
   async function signInWithGoogle() {
+    if (!supabase) return;
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: window.location.origin },
@@ -1067,6 +1069,7 @@ export default function Meridian() {
   }
 
   async function signOut() {
+    if (!supabase) return;
     await supabase.auth.signOut();
     setUser(null);
   }
