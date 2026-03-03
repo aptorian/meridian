@@ -3,7 +3,7 @@
   "description": "A time-blocking app with a horizontal timeline for desktop and vertical for mobile",
   "author": "Aptorian",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
