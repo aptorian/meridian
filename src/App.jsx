@@ -7,6 +7,7 @@ const SLOT_MINUTES = 15;
 const STORAGE_KEY = "timeblock-blocks";
 const NOTES_KEY = "timeblock-notes";
 const MUTE_KEY = "timeblock-muted";
+const TAGS_KEY = "timeblock-tags";
 
 const COLORS = [
   { bg: "#D4878F", lightBg: "#E8B5BA", name: "rose" },
@@ -446,24 +447,45 @@ const QUOTE_CATEGORIES = {
   productivity: PRODUCTIVITY_QUOTES,
 };
 
-const TODAY = new Date();
-const DATE_STR = TODAY.toLocaleDateString("en-US", {
-  weekday: "long",
-  month: "long",
-  day: "numeric",
-  year: "numeric",
-});
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
-function Notepad({ theme: t, onCloudSave, notesVersion }) {
+function formatDateStr(dateStr) {
+  // "YYYY-MM-DD" → "Monday, March 2, 2026"
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+function addDays(dateStr, n) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + n);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar = true, isMuted, setIsMuted }) {
   const editorRef = useRef(null);
   const saveTimerRef = useRef(null);
   const soundsRef = useRef(null);
-  const [isMuted, setIsMuted] = useState(() => {
-    try { return localStorage.getItem(MUTE_KEY) === "true"; } catch { return false; }
-  });
   const [isHovered, setIsHovered] = useState(false);
   const [fmtState, setFmtState] = useState({ bold: false, italic: false, ol: false, ul: false, checkbox: false });
   const checkboxModeRef = useRef(false);
+  const [slashMenu, setSlashMenu] = useState(null);
+  const slashRangeRef = useRef(null);
+
+  const SLASH_COMMANDS = useMemo(() => [
+    { key: "1", label: "Heading 1", action: () => document.execCommand("formatBlock", false, "h1") },
+    { key: "2", label: "Heading 2", action: () => document.execCommand("formatBlock", false, "h2") },
+    { key: "3", label: "Heading 3", action: () => document.execCommand("formatBlock", false, "h3") },
+    { key: "todo", label: "Checkbox list", action: () => toggleCheckboxList() },
+    { key: "bullet", label: "Bullet list", action: () => document.execCommand("insertUnorderedList") },
+    { key: "number", label: "Numbered list", action: () => document.execCommand("insertOrderedList") },
+    { key: "quote", label: "Blockquote", action: () => document.execCommand("formatBlock", false, "blockquote") },
+    { key: "divider", label: "Horizontal rule", action: () => document.execCommand("insertHorizontalRule") },
+  ], []);
 
   // Query current formatting at caret
   const updateFmtState = useCallback(() => {
@@ -495,11 +517,26 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
   useEffect(() => {
     if (editorRef.current) {
       try {
-        const saved = localStorage.getItem(NOTES_KEY);
-        if (saved) editorRef.current.innerHTML = saved;
+        const raw = localStorage.getItem(NOTES_KEY);
+        if (raw) {
+          // Try parsing as object (new format)
+          try {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed === "object" && parsed !== null) {
+              editorRef.current.innerHTML = parsed[columnKey] || "";
+              return;
+            }
+          } catch {
+            // Not JSON — legacy string format
+          }
+          // Legacy: plain string, only load for "_general"
+          if (columnKey === "_general") {
+            editorRef.current.innerHTML = raw;
+          }
+        }
       } catch {}
     }
-  }, [notesVersion]);
+  }, [notesVersion, columnKey]);
 
   // Preload sounds
   useEffect(() => {
@@ -514,18 +551,29 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
     soundsRef.current = sounds;
   }, []);
 
-  // Persist mute
-  useEffect(() => {
-    try { localStorage.setItem(MUTE_KEY, String(isMuted)); } catch {}
-  }, [isMuted]);
-
   function saveContent() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       try {
         if (editorRef.current) {
-          localStorage.setItem(NOTES_KEY, editorRef.current.innerHTML);
-          if (onCloudSave) onCloudSave();
+          const html = editorRef.current.innerHTML;
+          // Save to date-keyed notes object
+          let all = {};
+          try {
+            const raw = localStorage.getItem(NOTES_KEY);
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                if (typeof parsed === "object" && parsed !== null) all = parsed;
+              } catch {
+                // Legacy string — migrate
+                all = { "_general": raw };
+              }
+            }
+          } catch {}
+          all[columnKey] = html;
+          localStorage.setItem(NOTES_KEY, JSON.stringify(all));
+          if (onSave) onSave();
         }
       } catch {}
     }, 500);
@@ -609,9 +657,90 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
     }
   }
 
+  function getCaretPosition() {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return null;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rect = range.getClientRects()[0];
+    if (!rect && editorRef.current) {
+      // Fallback for empty lines
+      const editorRect = editorRef.current.getBoundingClientRect();
+      return { top: editorRect.top + 20, left: editorRect.left + 16 };
+    }
+    return rect ? { top: rect.bottom, left: rect.left } : null;
+  }
+
+  function executeSlashCommand(cmd) {
+    // Remove the slash text from the editor
+    const sel = window.getSelection();
+    if (sel?.rangeCount && slashRangeRef.current) {
+      const range = document.createRange();
+      range.setStart(slashRangeRef.current.startContainer, slashRangeRef.current.startOffset);
+      // Find the end of the slash text
+      const currentRange = sel.getRangeAt(0);
+      range.setEnd(currentRange.endContainer, currentRange.endOffset);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand("delete");
+    }
+    // Execute the command action
+    cmd.action();
+    setSlashMenu(null);
+    slashRangeRef.current = null;
+    saveContent();
+    requestAnimationFrame(updateFmtState);
+    editorRef.current?.focus();
+  }
+
   function handleKeyDown(e) {
     const k = e.key;
     if (["Shift", "Control", "Alt", "Meta", "CapsLock", "Tab"].includes(k)) return;
+
+    // Slash menu navigation
+    if (slashMenu) {
+      const filtered = SLASH_COMMANDS.filter((cmd) =>
+        !slashMenu.filter || cmd.key.startsWith(slashMenu.filter) || cmd.label.toLowerCase().includes(slashMenu.filter)
+      );
+      if (k === "ArrowDown") {
+        e.preventDefault();
+        setSlashMenu((prev) => ({ ...prev, selectedIndex: Math.min((prev?.selectedIndex ?? -1) + 1, filtered.length - 1) }));
+        return;
+      }
+      if (k === "ArrowUp") {
+        e.preventDefault();
+        setSlashMenu((prev) => ({ ...prev, selectedIndex: Math.max((prev?.selectedIndex ?? 0) - 1, 0) }));
+        return;
+      }
+      if (k === "Enter" || k === "Tab") {
+        e.preventDefault();
+        const idx = slashMenu.selectedIndex ?? 0;
+        if (filtered[idx]) executeSlashCommand(filtered[idx]);
+        return;
+      }
+      if (k === "Escape") {
+        e.preventDefault();
+        setSlashMenu(null);
+        slashRangeRef.current = null;
+        return;
+      }
+      if (k === "Backspace") {
+        // If we'd delete back to before the slash, close the menu
+        if (!slashMenu.filter || slashMenu.filter.length === 0) {
+          setSlashMenu(null);
+          slashRangeRef.current = null;
+        } else {
+          // Let the default happen, then update filter in onInput
+        }
+        // Don't return — let the key go through to the editor
+      }
+      // Space closes the menu without executing
+      if (k === " ") {
+        setSlashMenu(null);
+        slashRangeRef.current = null;
+      }
+    }
+
     if (e.metaKey || e.ctrlKey) {
       if (k === "b" || k === "i") {
         e.preventDefault();
@@ -763,54 +892,52 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Toolbar — visible on hover */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: "2px", padding: "0 4px 4px",
-        opacity: isHovered ? 1 : 0, transition: "opacity 0.2s ease",
-        pointerEvents: isHovered ? "auto" : "none",
-      }}>
-        {fmtBtn(<strong>B</strong>, "Bold (⌘B)", () => document.execCommand("bold"), fmtState.bold)}
-        {fmtBtn(<em>I</em>, "Italic (⌘I)", () => document.execCommand("italic"), fmtState.italic)}
-        {fmtBtn("1.", "Ordered list (⌘⇧7)", () => document.execCommand("insertOrderedList"), fmtState.ol)}
-        {fmtBtn("•", "Bullet list (⌘⇧8)", () => document.execCommand("insertUnorderedList"), fmtState.ul)}
-        {fmtBtn("☐", "Checkbox (⌘⇧9)", () => toggleCheckboxList(), fmtState.checkbox)}
-        <div style={{ flex: 1 }} />
-        {/* Mute toggle */}
-        <div
-          onClick={(e) => { e.stopPropagation(); setIsMuted((p) => !p); }}
-          title={isMuted ? "Unmute sounds" : "Mute sounds"}
-          style={{
-            width: 26, height: 26, cursor: "pointer", display: "flex", alignItems: "center",
-            justifyContent: "center", borderRadius: "4px",
-            opacity: isMuted ? 1 : 0.5,
-            background: isMuted ? t.noteBorder : "transparent",
-            transition: "opacity 0.15s, background 0.15s",
-          }}
-          onMouseEnter={(e) => { if (!isMuted) { e.currentTarget.style.opacity = "1"; e.currentTarget.style.background = t.noteBorder; } }}
-          onMouseLeave={(e) => { if (!isMuted) { e.currentTarget.style.opacity = "0.5"; e.currentTarget.style.background = "transparent"; } }}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={t.noteText} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            {isMuted ? (
-              <>
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <line x1="23" y1="9" x2="17" y2="15" />
-                <line x1="17" y1="9" x2="23" y2="15" />
-              </>
-            ) : (
-              <>
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-              </>
-            )}
-          </svg>
-        </div>
-      </div>
       <div
         ref={editorRef}
         contentEditable
         suppressContentEditableWarning
-        onInput={() => { saveContent(); updateFmtState(); }}
+        onInput={() => {
+          saveContent(); updateFmtState();
+          // Slash command detection
+          const sel = window.getSelection();
+          if (sel?.anchorNode?.nodeType === 3) {
+            const text = sel.anchorNode.textContent;
+            const offset = sel.anchorOffset;
+            // Find the last slash before cursor
+            const before = text.substring(0, offset);
+            const slashIdx = before.lastIndexOf("/");
+            if (slashIdx !== -1 && (slashIdx === 0 || before[slashIdx - 1] === " " || before[slashIdx - 1] === "\n")) {
+              const filter = before.substring(slashIdx + 1).toLowerCase();
+              const pos = getCaretPosition();
+              if (pos) {
+                // Store the range starting at the slash
+                const range = document.createRange();
+                range.setStart(sel.anchorNode, slashIdx);
+                range.collapse(true);
+                slashRangeRef.current = { startContainer: sel.anchorNode, startOffset: slashIdx };
+                // Check if any commands match
+                const matches = SLASH_COMMANDS.filter((cmd) =>
+                  !filter || cmd.key.startsWith(filter) || cmd.label.toLowerCase().includes(filter)
+                );
+                if (matches.length > 0) {
+                  const editorRect = editorRef.current?.getBoundingClientRect();
+                  setSlashMenu({
+                    top: pos.top - (editorRect?.top || 0) + 4,
+                    left: pos.left - (editorRect?.left || 0),
+                    filter,
+                    selectedIndex: 0,
+                  });
+                } else {
+                  setSlashMenu(null);
+                  slashRangeRef.current = null;
+                }
+              }
+            } else if (slashMenu) {
+              setSlashMenu(null);
+              slashRangeRef.current = null;
+            }
+          }
+        }}
         onKeyDown={handleKeyDown}
         onMouseUp={updateFmtState}
         data-placeholder="Notes..."
@@ -831,6 +958,49 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
           minHeight: "60px",
         }}
       />
+      {/* Slash command menu */}
+      {slashMenu && (() => {
+        const filtered = SLASH_COMMANDS.filter((cmd) =>
+          !slashMenu.filter || cmd.key.startsWith(slashMenu.filter) || cmd.label.toLowerCase().includes(slashMenu.filter)
+        );
+        if (filtered.length === 0) return null;
+        return (
+          <div style={{
+            position: "absolute",
+            top: slashMenu.top + 4,
+            left: Math.min(slashMenu.left, 200),
+            background: t.bgLocked,
+            border: t.timelineBorder,
+            borderRadius: "8px",
+            padding: "4px 0",
+            zIndex: 50,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+            minWidth: "160px",
+            fontFamily: "'DM Sans', sans-serif",
+          }}>
+            {filtered.map((cmd, i) => (
+              <div
+                key={cmd.key}
+                onMouseDown={(e) => { e.preventDefault(); executeSlashCommand(cmd); }}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: "13px",
+                  color: t.noteText,
+                  cursor: "pointer",
+                  background: i === (slashMenu.selectedIndex ?? 0) ? t.toggleHoverBg : "transparent",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={() => setSlashMenu((prev) => prev ? { ...prev, selectedIndex: i } : prev)}
+              >
+                <span style={{ color: t.quoteMuted, fontSize: "11px", minWidth: "28px" }}>/{cmd.key}</span>
+                <span>{cmd.label}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
       <style>{`
         [data-placeholder]:empty:before {
           content: attr(data-placeholder);
@@ -840,6 +1010,35 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
         }
         [contenteditable] ul, [contenteditable] ol {
           padding-left: 24px;
+        }
+        [contenteditable] h1 {
+          font-size: 1.5em;
+          font-weight: 600;
+          margin: 8px 0 4px;
+          line-height: 1.3;
+        }
+        [contenteditable] h2 {
+          font-size: 1.25em;
+          font-weight: 600;
+          margin: 6px 0 4px;
+          line-height: 1.3;
+        }
+        [contenteditable] h3 {
+          font-size: 1.1em;
+          font-weight: 600;
+          margin: 4px 0 2px;
+          line-height: 1.3;
+        }
+        [contenteditable] blockquote {
+          border-left: 3px solid currentColor;
+          padding-left: 12px;
+          opacity: 0.8;
+          margin: 4px 0;
+        }
+        [contenteditable] hr {
+          border: none;
+          border-top: 1px solid ${t.noteBorder};
+          margin: 8px 0;
         }
         [contenteditable] input[type="checkbox"] {
           -webkit-appearance: none;
@@ -875,18 +1074,116 @@ function Notepad({ theme: t, onCloudSave, notesVersion }) {
   );
 }
 
+function NotepadArea({ theme: t, tags, activeColors, onCloudSave, notesVersion, isMuted, setIsMuted }) {
+  const [containerWidth, setContainerWidth] = useState(700);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width));
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // Columns: if tags exist, only tag columns (no General). If no tags, single General notepad.
+  const columns = useMemo(() => {
+    if (tags.length === 0) return [{ key: "_general", name: "General", colorIndex: null }];
+    return tags.map((tg) => ({ key: tg.id, name: tg.name, colorIndex: tg.colorIndex }));
+  }, [tags]);
+
+  if (columns.length === 1 && columns[0].key === "_general") {
+    // No tags — just render a single notepad
+    return (
+      <div ref={containerRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+        <NotepadColumn
+          theme={t}
+          columnKey="_general"
+          onSave={onCloudSave}
+          notesVersion={notesVersion}
+          showToolbar={true}
+          isMuted={isMuted}
+          setIsMuted={setIsMuted}
+        />
+      </div>
+    );
+  }
+
+  // Always side-by-side columns, each takes equal space. Parent container expands for 3+ columns.
+  return (
+    <div ref={containerRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{
+        display: "flex",
+        gap: "8px",
+        flex: 1,
+        minHeight: 0,
+      }}>
+        {columns.map((col) => {
+          const colColor = col.colorIndex != null ? activeColors[col.colorIndex % activeColors.length] : null;
+          return (
+            <div
+              key={col.key}
+              style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                minWidth: 0,
+              }}
+            >
+              <div style={{
+                display: "flex", alignItems: "center", gap: "6px",
+                padding: "4px 4px 6px", fontSize: "11px",
+                fontFamily: "'DM Sans', sans-serif", color: t.quoteMuted,
+              }}>
+                {colColor && (
+                  <div style={{
+                    width: "8px", height: "8px", borderRadius: "50%",
+                    background: colColor.bg, flexShrink: 0,
+                  }} />
+                )}
+                {col.name}
+              </div>
+              <NotepadColumn
+                theme={t}
+                columnKey={col.key}
+                onSave={onCloudSave}
+                notesVersion={notesVersion}
+                showToolbar={columns.length === 1}
+                isMuted={isMuted}
+                setIsMuted={setIsMuted}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const isElectron = typeof window !== "undefined" && !!window.electronAPI;
 const isMacElectron = isElectron && window.electronAPI.platform === "darwin";
 const isWinElectron = isElectron && window.electronAPI.platform === "win32";
 const userPlatform = /Win/.test(navigator.platform) ? "windows" : /Mac/.test(navigator.platform) ? "mac" : "other";
 
 export default function Meridian() {
+  const [selectedDate, setSelectedDate] = useState(() => todayStr());
+  const isToday = selectedDate === todayStr();
+
   const [blocks, setBlocks] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        // Migration: if stored as flat array (old format), convert to date-keyed
+        if (Array.isArray(parsed)) {
+          const migrated = { [todayStr()]: parsed };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+          return parsed;
+        }
+        // Date-keyed format
+        if (typeof parsed === "object" && parsed !== null) {
+          return parsed[todayStr()] || DEFAULT_BLOCKS;
+        }
       }
     } catch {
       // Corrupted data — fall through to defaults
@@ -894,6 +1191,10 @@ export default function Meridian() {
     return DEFAULT_BLOCKS;
   });
   const [isLocked, setIsLocked] = useState(true);
+  const [mouseMoving, setMouseMoving] = useState(false);
+  const [isMuted, setIsMuted] = useState(() => {
+    try { return localStorage.getItem(MUTE_KEY) === "true"; } catch { return false; }
+  });
   const [longPressProgress, setLongPressProgress] = useState(0);
   const [editingBlockId, setEditingBlockId] = useState(null);
   const [hoveredSlot, setHoveredSlot] = useState(null);
@@ -936,6 +1237,25 @@ export default function Meridian() {
   const [isVertical, setIsVertical] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 700px)").matches
   );
+  const [tags, setTags] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TAGS_KEY));
+      if (Array.isArray(saved)) return saved;
+    } catch {}
+    return [];
+  });
+  // Calendar integration state (persisted to localStorage)
+  const [calendarEnabled, setCalendarEnabled] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("timeblock-cal-enabled")) === true; } catch {} return false;
+  });
+  const [calendarIds, setCalendarIds] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("timeblock-cal-ids")); if (Array.isArray(s)) return s; } catch {} return [];
+  });
+  const [availableCalendars, setAvailableCalendars] = useState([]); // fetched from Google
+  const [calendarEvents, setCalendarEvents] = useState([]); // events for the current date
+  const calendarCacheRef = useRef({}); // { "YYYY-MM-DD": { events: [], fetchedAt: timestamp } }
+  const calendarPollRef = useRef(null);
+
   const [quoteCategories, setQuoteCategories] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("timeblock-quote-categories"));
@@ -947,32 +1267,30 @@ export default function Meridian() {
     quoteCategories.flatMap((cat) => QUOTE_CATEGORIES[cat] || []),
     [quoteCategories]
   );
-  const [quoteData, setQuoteData] = useState(() => {
-    const today = new Date().toDateString();
-    try {
-      const saved = JSON.parse(localStorage.getItem("timeblock-quote"));
-      if (saved?.date === today && typeof saved.index === "number") return saved;
-    } catch {}
+  const quoteIndex = useMemo(() => {
     let hash = 0;
-    for (let i = 0; i < today.length; i++) {
-      hash = ((hash << 5) - hash) + today.charCodeAt(i);
+    for (let i = 0; i < selectedDate.length; i++) {
+      hash = ((hash << 5) - hash) + selectedDate.charCodeAt(i);
       hash |= 0;
     }
-    const cats = (() => { try { const s = JSON.parse(localStorage.getItem("timeblock-quote-categories")); return Array.isArray(s) && s.length > 0 ? s : ["stoic"]; } catch { return ["stoic"]; } })();
-    const pool = cats.flatMap((c) => QUOTE_CATEGORIES[c] || []);
-    return { date: today, index: Math.abs(hash) % Math.max(1, pool.length) };
-  });
-  // Persist quote data
+    return Math.abs(hash) % Math.max(1, mergedQuotes.length);
+  }, [selectedDate, mergedQuotes.length]);
+  // Persist quote categories
   useEffect(() => {
-    try { localStorage.setItem("timeblock-quote", JSON.stringify(quoteData)); } catch {}
-  }, [quoteData]);
-  // Reset quote index if categories change and index is out of range
-  useEffect(() => {
-    if (mergedQuotes.length > 0 && quoteData.index >= mergedQuotes.length) {
-      setQuoteData((prev) => ({ ...prev, index: 0 }));
-    }
     try { localStorage.setItem("timeblock-quote-categories", JSON.stringify(quoteCategories)); } catch {}
-  }, [quoteCategories, mergedQuotes.length]);
+  }, [quoteCategories]);
+  // Persist tags to localStorage
+  const lastUsedTagRef = useRef(null);
+  useEffect(() => {
+    try { localStorage.setItem(TAGS_KEY, JSON.stringify(tags)); } catch {}
+  }, [tags]);
+  // Persist calendar settings to localStorage
+  useEffect(() => {
+    try { localStorage.setItem("timeblock-cal-enabled", JSON.stringify(calendarEnabled)); } catch {}
+  }, [calendarEnabled]);
+  useEffect(() => {
+    try { localStorage.setItem("timeblock-cal-ids", JSON.stringify(calendarIds)); } catch {}
+  }, [calendarIds]);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 700px)");
     const handler = (e) => setIsVertical(e.matches);
@@ -997,6 +1315,14 @@ export default function Meridian() {
       return isNaN(num) ? max : Math.max(max, num);
     }, 0) + 1
   );
+  // Recompute nextIdRef when date changes and blocks are loaded
+  useEffect(() => {
+    const max = blocks.reduce((m, b) => {
+      const num = parseInt(b.id, 10);
+      return isNaN(num) ? m : Math.max(m, num);
+    }, 0);
+    nextIdRef.current = max + 1;
+  }, [selectedDate]);
 
   // --- Auth & Cloud Sync ---
   const [user, setUser] = useState(null);
@@ -1011,8 +1337,17 @@ export default function Meridian() {
       setUser(session?.user ?? null);
       setAuthLoading(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
+      // Capture Google provider tokens from OAuth callback (only available here, not in getSession)
+      if (session?.provider_token) {
+        console.log("[Calendar] Captured provider_token from auth state change, event:", event);
+        localStorage.setItem("timeblock-cal-provider-token", session.provider_token);
+      }
+      if (session?.provider_refresh_token) {
+        console.log("[Calendar] Captured provider_refresh_token from auth state change, event:", event);
+        localStorage.setItem("timeblock-cal-provider-refresh-token", session.provider_refresh_token);
+      }
     });
 
     // In Electron, listen for OAuth deep link callback
@@ -1044,9 +1379,10 @@ export default function Meridian() {
         .single();
       if (error && error.code === "PGRST116") {
         // No row yet — create one with current localStorage data
+        const dateKeyed = { [todayStr()]: blocks };
         await supabase.from("user_data").insert({
           user_id: user.id,
-          blocks,
+          blocks: dateKeyed,
           notes: localStorage.getItem(NOTES_KEY) || "",
           theme,
           dark_variant: darkVariant,
@@ -1054,17 +1390,47 @@ export default function Meridian() {
           hours_end: hoursEnd,
           muted: localStorage.getItem(MUTE_KEY) === "true",
           quote_categories: quoteCategories,
+          tags,
+          calendar_enabled: calendarEnabled,
+          calendar_ids: calendarIds,
         });
       } else if (data) {
         // Hydrate state from cloud
-        if (Array.isArray(data.blocks)) setBlocks(data.blocks);
-        if (data.notes != null) { localStorage.setItem(NOTES_KEY, data.notes); setNotesVersion((v) => v + 1); }
+        let cloudBlocks = data.blocks;
+        // Migration: if cloud has flat array (old format), convert to date-keyed
+        if (Array.isArray(cloudBlocks)) {
+          cloudBlocks = { [todayStr()]: cloudBlocks };
+          // Save migrated format back to cloud
+          await supabase.from("user_data").update({ blocks: cloudBlocks }).eq("user_id", user.id);
+        }
+        // Also store the full cloud blocks object in localStorage for offline access
+        if (cloudBlocks && typeof cloudBlocks === "object") {
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudBlocks)); } catch {}
+          const todayBlocks = cloudBlocks[todayStr()];
+          if (Array.isArray(todayBlocks)) setBlocks(todayBlocks);
+        }
+        if (data.notes != null) {
+          // Migrate: if notes is a plain HTML string (old format), wrap it
+          let notesStr = data.notes;
+          try {
+            JSON.parse(notesStr); // test if already JSON
+          } catch {
+            // Plain HTML string — migrate to object format
+            notesStr = JSON.stringify({ "_general": notesStr });
+          }
+          localStorage.setItem(NOTES_KEY, notesStr);
+          setNotesVersion((v) => v + 1);
+        }
         if (data.theme && THEMES[data.theme]) setTheme(data.theme);
         if (data.dark_variant) setDarkVariant(data.dark_variant);
         if (data.hours_start != null) setHoursStart(data.hours_start);
         if (data.hours_end != null) setHoursEnd(data.hours_end);
         if (data.muted != null) localStorage.setItem(MUTE_KEY, String(data.muted));
         if (Array.isArray(data.quote_categories)) setQuoteCategories(data.quote_categories);
+        if (Array.isArray(data.tags)) setTags(data.tags);
+        // Calendar settings
+        if (data.calendar_enabled != null) setCalendarEnabled(data.calendar_enabled);
+        if (Array.isArray(data.calendar_ids)) setCalendarIds(data.calendar_ids);
       }
     })();
   }, [user]);
@@ -1075,8 +1441,16 @@ export default function Meridian() {
     if (cloudSaveTimer.current) clearTimeout(cloudSaveTimer.current);
     cloudSaveTimer.current = setTimeout(async () => {
       lastCloudSave.current = Date.now();
+      // Build date-keyed blocks object from localStorage (has all dates)
+      let allBlocks = {};
+      try {
+        const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        if (typeof stored === "object" && !Array.isArray(stored)) allBlocks = stored;
+      } catch {}
+      // Ensure current date's blocks are up-to-date
+      allBlocks[selectedDate] = blocks;
       await supabase.from("user_data").update({
-        blocks,
+        blocks: allBlocks,
         notes: localStorage.getItem(NOTES_KEY) || "",
         theme,
         dark_variant: darkVariant,
@@ -1084,10 +1458,13 @@ export default function Meridian() {
         hours_end: hoursEnd,
         muted: localStorage.getItem(MUTE_KEY) === "true",
         quote_categories: quoteCategories,
+        tags,
+        calendar_enabled: calendarEnabled,
+        calendar_ids: calendarIds,
         updated_at: new Date().toISOString(),
       }).eq("user_id", user.id);
     }, 1000);
-  }, [user, blocks, theme, darkVariant, hoursStart, hoursEnd, quoteCategories]);
+  }, [user, blocks, selectedDate, theme, darkVariant, hoursStart, hoursEnd, quoteCategories, tags, calendarEnabled, calendarIds]);
 
   // Trigger cloud save when state changes
   useEffect(() => {
@@ -1106,19 +1483,41 @@ export default function Meridian() {
           // Ignore events from our own saves (within 3s window)
           if (Date.now() - lastCloudSave.current < 3000) return;
           const data = payload.new;
-          if (Array.isArray(data.blocks)) setBlocks(data.blocks);
-          if (data.notes != null) { localStorage.setItem(NOTES_KEY, data.notes); setNotesVersion((v) => v + 1); }
+          // Handle date-keyed blocks
+          if (data.blocks && typeof data.blocks === "object" && !Array.isArray(data.blocks)) {
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.blocks)); } catch {}
+            const dateBlocks = data.blocks[selectedDate];
+            if (Array.isArray(dateBlocks)) setBlocks(dateBlocks);
+          } else if (Array.isArray(data.blocks)) {
+            // Legacy flat array fallback
+            setBlocks(data.blocks);
+          }
+          if (data.notes != null) {
+          // Migrate: if notes is a plain HTML string (old format), wrap it
+          let notesStr = data.notes;
+          try {
+            JSON.parse(notesStr); // test if already JSON
+          } catch {
+            // Plain HTML string — migrate to object format
+            notesStr = JSON.stringify({ "_general": notesStr });
+          }
+          localStorage.setItem(NOTES_KEY, notesStr);
+          setNotesVersion((v) => v + 1);
+        }
           if (data.theme && THEMES[data.theme]) setTheme(data.theme);
           if (data.dark_variant) setDarkVariant(data.dark_variant);
           if (data.hours_start != null) setHoursStart(data.hours_start);
           if (data.hours_end != null) setHoursEnd(data.hours_end);
           if (data.muted != null) localStorage.setItem(MUTE_KEY, String(data.muted));
           if (Array.isArray(data.quote_categories)) setQuoteCategories(data.quote_categories);
+          if (Array.isArray(data.tags)) setTags(data.tags);
+          if (data.calendar_enabled != null) setCalendarEnabled(data.calendar_enabled);
+          if (Array.isArray(data.calendar_ids)) setCalendarIds(data.calendar_ids);
         }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user]);
+  }, [user, selectedDate]);
 
   async function signInWithGoogle() {
     if (!supabase) return;
@@ -1146,14 +1545,380 @@ export default function Meridian() {
     setUser(null);
   }
 
-  // Persist blocks to localStorage
+  // --- Google Calendar Integration ---
+  async function callCalendarFunction(action, params = {}) {
+    if (!supabase || !user) { console.warn("[Calendar] No supabase or user"); return null; }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { console.warn("[Calendar] No session"); return null; }
+    // Pass provider_token if available (for immediate use after OAuth)
+    const providerToken = session.provider_token || localStorage.getItem("timeblock-cal-provider-token") || undefined;
+    console.log(`[Calendar] Calling ${action}, hasProviderToken: ${!!providerToken}, jwt: ${session.access_token?.substring(0, 20)}...`);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+            "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({ action, provider_token: providerToken, ...params }),
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[Calendar] Edge Function error (${res.status}):`, errText);
+        return null;
+      }
+      const result = await res.json();
+      console.log(`[Calendar] ${action} result:`, result);
+      return result;
+    } catch (err) {
+      console.error("[Calendar] Fetch error:", err);
+      return null;
+    }
+  }
+
+  async function connectCalendar() {
+    if (!supabase) return;
+    // Set flag so we know to enable calendar after OAuth redirect
+    try { localStorage.setItem("timeblock-cal-connecting", "true"); } catch {}
+    // Re-auth with calendar scope
+    const opts = {
+      provider: "google",
+      options: {
+        scopes: "https://www.googleapis.com/auth/calendar.events",
+        redirectTo: isElectron ? "https://meridian.aptorian.com/auth/callback" : window.location.origin,
+        queryParams: { access_type: "offline", prompt: "consent" },
+      },
+    };
+    if (isElectron) {
+      opts.options.skipBrowserRedirect = true;
+      const { data } = await supabase.auth.signInWithOAuth(opts);
+      if (data?.url) window.open(data.url, "_blank");
+    } else {
+      await supabase.auth.signInWithOAuth(opts);
+    }
+  }
+
+  // After OAuth redirect: detect pending calendar connection, capture tokens, auto-enable
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const connecting = localStorage.getItem("timeblock-cal-connecting");
+    if (connecting === "true") {
+      console.log("[Calendar] Detected cal-connecting flag, enabling calendar...");
+      localStorage.removeItem("timeblock-cal-connecting");
+      setCalendarEnabled(true);
+      // Small delay to ensure onAuthStateChange has fired and stored tokens in localStorage
+      setTimeout(async () => {
+        // Check for refresh token captured by onAuthStateChange
+        const storedRefreshToken = localStorage.getItem("timeblock-cal-provider-refresh-token");
+        console.log("[Calendar] Stored provider_refresh_token:", !!storedRefreshToken);
+        if (storedRefreshToken) {
+          // Persist refresh token to Supabase for Edge Function to use
+          const { error } = await supabase.from("user_data").update({
+            google_refresh_token: storedRefreshToken,
+          }).eq("user_id", user.id);
+          if (error) console.error("[Calendar] Failed to save refresh token:", error);
+          else console.log("[Calendar] Saved refresh token to user_data");
+          localStorage.removeItem("timeblock-cal-provider-refresh-token");
+        } else {
+          // Fallback: try getSession (may not have provider tokens)
+          const { data: { session } } = await supabase.auth.getSession();
+          console.log("[Calendar] Session provider_token:", !!session?.provider_token, "provider_refresh_token:", !!session?.provider_refresh_token);
+          if (session?.provider_refresh_token) {
+            await supabase.from("user_data").update({
+              google_refresh_token: session.provider_refresh_token,
+            }).eq("user_id", user.id);
+          }
+        }
+        // Fetch available calendars
+        const cals = await callCalendarFunction("list-calendars");
+        if (cals?.calendars) {
+          setAvailableCalendars(cals.calendars);
+          const primary = cals.calendars.find((c) => c.primary);
+          if (primary) {
+            setCalendarIds([primary.id]);
+          }
+          console.log("[Calendar] Fetched calendars:", cals.calendars.length);
+        } else {
+          console.error("[Calendar] Failed to fetch calendars after connect");
+        }
+      }, 500);
+    }
+  }, [user]);
+
+  async function fetchCalendars() {
+    const data = await callCalendarFunction("list-calendars");
+    if (data?.calendars) setAvailableCalendars(data.calendars);
+  }
+
+  async function fetchCalendarEvents(dateStr) {
+    if (!calendarEnabled || calendarIds.length === 0) return;
+    // Check cache
+    const cached = calendarCacheRef.current[dateStr];
+    const isViewingToday = dateStr === todayStr();
+    const ttl = isViewingToday ? 5 * 60 * 1000 : 60 * 60 * 1000; // 5min today, 1hr past
+    if (cached && Date.now() - cached.fetchedAt < ttl) {
+      setCalendarEvents(cached.events);
+      return;
+    }
+    const data = await callCalendarFunction("get-events", {
+      date: dateStr,
+      calendarIds,
+    });
+    if (data?.events) {
+      // Convert to slot-based model
+      const mapped = data.events.map((ev) => {
+        const start = new Date(ev.start);
+        const end = new Date(ev.end);
+        const startMins = start.getHours() * 60 + start.getMinutes();
+        const endMins = end.getHours() * 60 + end.getMinutes();
+        return {
+          googleEventId: ev.id,
+          title: ev.summary || "(No title)",
+          startSlot: Math.max(0, Math.floor((startMins - hoursStart * 60) / SLOT_MINUTES)),
+          endSlot: Math.min(slots, Math.ceil((endMins - hoursStart * 60) / SLOT_MINUTES)),
+          calendarId: ev.calendarId,
+          calendarColor: ev.calendarColor || "#7A9BBF",
+          meetingLink: ev.hangoutLink || ev.conferenceData?.entryPoints?.[0]?.uri || null,
+          source: "google",
+        };
+      }).filter((ev) => ev.endSlot > ev.startSlot && ev.startSlot < slots);
+      calendarCacheRef.current[dateStr] = { events: mapped, fetchedAt: Date.now() };
+      setCalendarEvents(mapped);
+    }
+  }
+
+  // Auto-fetch calendar list when calendar is enabled and user is logged in
+  useEffect(() => {
+    if (calendarEnabled && user && availableCalendars.length === 0) {
+      fetchCalendars();
+    }
+  }, [calendarEnabled, user]);
+
+  // Fetch calendar events when date changes or calendar settings change
+  useEffect(() => {
+    if (calendarEnabled && calendarIds.length > 0 && user) {
+      fetchCalendarEvents(selectedDate);
+    } else {
+      setCalendarEvents([]);
+    }
+  }, [selectedDate, calendarEnabled, calendarIds, user]);
+
+  // Poll calendar events every 5 minutes for today
+  useEffect(() => {
+    if (!calendarEnabled || calendarIds.length === 0 || !user) return;
+    calendarPollRef.current = setInterval(() => {
+      if (selectedDate === todayStr()) {
+        calendarCacheRef.current[selectedDate] = null; // invalidate
+        fetchCalendarEvents(selectedDate);
+      }
+    }, 5 * 60 * 1000);
+    return () => clearInterval(calendarPollRef.current);
+  }, [calendarEnabled, calendarIds, user, selectedDate]);
+
+  // --- 2-way sync: Push Meridian blocks → Google Calendar ---
+  const prevBlocksRef = useRef(null); // tracks previous blocks for change detection
+  const pushSyncTimerRef = useRef(null);
+
+  // Detect block changes and push to Google Calendar (debounced 2s)
+  useEffect(() => {
+    if (!calendarEnabled || !user || calendarIds.length === 0) {
+      prevBlocksRef.current = blocks;
+      return;
+    }
+    const prevBlocks = prevBlocksRef.current;
+    prevBlocksRef.current = blocks;
+    if (!prevBlocks) return; // first render, skip
+
+    // Only sync on today (don't push historical changes)
+    if (selectedDate !== todayStr()) return;
+
+    if (pushSyncTimerRef.current) clearTimeout(pushSyncTimerRef.current);
+    pushSyncTimerRef.current = setTimeout(async () => {
+      // Find newly created blocks (in current but not previous, no googleEventId yet)
+      const prevIds = new Set(prevBlocks.map((b) => b.id));
+      const created = blocks.filter((b) => !prevIds.has(b.id) && !b.googleEventId && b.title !== "New Block");
+
+      // Find deleted blocks that had a googleEventId
+      const currIds = new Set(blocks.map((b) => b.id));
+      const deleted = prevBlocks.filter((b) => !currIds.has(b.id) && b.googleEventId);
+
+      // Find updated blocks (title, startSlot, or endSlot changed, have googleEventId)
+      const updated = blocks.filter((b) => {
+        if (!b.googleEventId) return false;
+        const prev = prevBlocks.find((p) => p.id === b.id);
+        if (!prev) return false;
+        return prev.title !== b.title || prev.startSlot !== b.startSlot || prev.endSlot !== b.endSlot;
+      });
+
+      // Helper: convert slot to ISO datetime for today
+      function slotToDateTime(slot) {
+        const mins = hoursStart * 60 + slot * SLOT_MINUTES;
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        const d = new Date();
+        d.setHours(h, m, 0, 0);
+        return d.toISOString();
+      }
+
+      // Push creates
+      for (const block of created) {
+        const targetCalendarId = calendarIds[0]; // default to first selected calendar
+        try {
+          const result = await callCalendarFunction("create-event", {
+            calendarId: targetCalendarId,
+            event: {
+              summary: block.title,
+              start: slotToDateTime(block.startSlot),
+              end: slotToDateTime(block.endSlot),
+            },
+          });
+          if (result?.id) {
+            // Store the Google event ID back on the block
+            setBlocks((prev) =>
+              prev.map((b) => b.id === block.id ? { ...b, googleEventId: result.id } : b)
+            );
+          }
+        } catch (err) {
+          console.warn("Failed to push block to Google Calendar:", err);
+        }
+      }
+
+      // Push updates
+      for (const block of updated) {
+        const targetCalendarId = calendarIds[0];
+        try {
+          await callCalendarFunction("update-event", {
+            calendarId: targetCalendarId,
+            eventId: block.googleEventId,
+            event: {
+              summary: block.title,
+              start: slotToDateTime(block.startSlot),
+              end: slotToDateTime(block.endSlot),
+            },
+          });
+        } catch (err) {
+          console.warn("Failed to update Google Calendar event:", err);
+        }
+      }
+
+      // Push deletes
+      for (const block of deleted) {
+        const targetCalendarId = calendarIds[0];
+        try {
+          await callCalendarFunction("delete-event", {
+            calendarId: targetCalendarId,
+            eventId: block.googleEventId,
+          });
+        } catch (err) {
+          console.warn("Failed to delete Google Calendar event:", err);
+        }
+      }
+
+      // Refresh calendar events after pushing
+      if (created.length > 0 || updated.length > 0 || deleted.length > 0) {
+        calendarCacheRef.current[selectedDate] = null; // invalidate cache
+        fetchCalendarEvents(selectedDate);
+      }
+    }, 2000); // 2s debounce
+
+    return () => {
+      if (pushSyncTimerRef.current) clearTimeout(pushSyncTimerRef.current);
+    };
+  }, [blocks, calendarEnabled, calendarIds, user, selectedDate, hoursStart]);
+
+  // Lane computation for overlapping blocks + calendar events
+  function computeLanes(allItems) {
+    const sorted = [...allItems].sort((a, b) => a.startSlot - b.startSlot);
+    const lanes = [];
+    for (const item of sorted) {
+      const lane = lanes.find((l) => l[l.length - 1].endSlot <= item.startSlot);
+      if (lane) lane.push(item);
+      else lanes.push([item]);
+    }
+    // Assign lane info
+    const result = new Map();
+    lanes.forEach((lane, laneIdx) => {
+      lane.forEach((item) => {
+        result.set(item, { laneIndex: laneIdx, totalLanes: lanes.length });
+      });
+    });
+    return result;
+  }
+
+  // Compute lane layout for all timeline items (blocks + calendar events)
+  // Returns a Map keyed by unique id string → { laneIndex, totalLanes }
+  const laneInfo = useMemo(() => {
+    const allItems = [
+      ...blocks.map((b) => ({ id: `block_${b.id}`, startSlot: b.startSlot, endSlot: b.endSlot })),
+      ...calendarEvents.map((ev) => ({ id: `cal_${ev.googleEventId}`, startSlot: ev.startSlot, endSlot: ev.endSlot })),
+    ];
+    if (allItems.length === 0) return {};
+    const sorted = [...allItems].sort((a, b) => a.startSlot - b.startSlot);
+    const lanes = [];
+    for (const item of sorted) {
+      const lane = lanes.find((l) => l[l.length - 1].endSlot <= item.startSlot);
+      if (lane) lane.push(item);
+      else lanes.push([item]);
+    }
+    const result = {};
+    lanes.forEach((lane, laneIdx) => {
+      lane.forEach((item) => {
+        result[item.id] = { laneIndex: laneIdx, totalLanes: lanes.length };
+      });
+    });
+    return result;
+  }, [blocks, calendarEvents]);
+
+  // Helper to get lane-based style adjustments
+  function getLaneStyle(laneKey, isVerticalLayout) {
+    const info = laneInfo[laneKey];
+    if (!info || info.totalLanes <= 1) return {}; // no overlap, full space
+    const pct = 100 / info.totalLanes;
+    const offset = pct * info.laneIndex;
+    if (isVerticalLayout) {
+      return { left: `${offset}%`, width: `${pct}%`, right: "auto" };
+    }
+    return { top: `${offset}%`, height: `${pct}%`, bottom: "auto" };
+  }
+
+  // Persist blocks to localStorage (date-keyed)
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(blocks));
+      const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      // Ensure it's an object (not a leftover array)
+      const store = (typeof all === "object" && !Array.isArray(all)) ? all : {};
+      store[selectedDate] = blocks;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
     } catch {
       // Storage full or unavailable
     }
-  }, [blocks]);
+  }, [blocks, selectedDate]);
+
+  // Navigate to a different date
+  const navigateDate = useCallback((dateStr) => {
+    setSelectedDate(dateStr);
+    // Load blocks for the new date from localStorage
+    try {
+      const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      if (typeof all === "object" && !Array.isArray(all) && Array.isArray(all[dateStr])) {
+        setBlocks(all[dateStr]);
+      } else {
+        setBlocks(DEFAULT_BLOCKS);
+      }
+    } catch {
+      setBlocks(DEFAULT_BLOCKS);
+    }
+    // Reset editing state
+    setEditingBlockId(null);
+    setHoveredSlot(null);
+    setDragState(null);
+    setResizeState(null);
+    setReorderState(null);
+  }, []);
 
   // Clamp blocks when day range changes
   useEffect(() => {
@@ -1206,10 +1971,30 @@ export default function Meridian() {
     }
   }, [editingBlockId]);
 
+  // Persist mute preference
+  useEffect(() => {
+    try { localStorage.setItem(MUTE_KEY, String(isMuted)); } catch {}
+  }, [isMuted]);
+
+  // Track mouse movement for lock icon visibility
+  const mouseMovingTimerRef = useRef(null);
+  useEffect(() => {
+    function handleMouseMove() {
+      setMouseMoving(true);
+      if (mouseMovingTimerRef.current) clearTimeout(mouseMovingTimerRef.current);
+      mouseMovingTimerRef.current = setTimeout(() => setMouseMoving(false), 2000);
+    }
+    document.addEventListener("mousemove", handleMouseMove);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      if (mouseMovingTimerRef.current) clearTimeout(mouseMovingTimerRef.current);
+    };
+  }, []);
+
   // Long press for padlock toggle
   const startLongPress = useCallback(() => {
     let start = performance.now();
-    const duration = isLocked ? 1020 : 240;
+    const duration = isLocked ? 1020 : 194;
     function tick(now) {
       const elapsed = now - start;
       const progress = Math.min(elapsed / duration, 1);
@@ -1261,12 +2046,18 @@ export default function Meridian() {
     const empty = findEmptySlot(blocks, slot, slots);
     if (!empty) return;
     const id = String(nextIdRef.current++);
+    // Default to last used tag, or null if no tags exist
+    const defaultTagId = lastUsedTagRef.current && tags.find((tg) => tg.id === lastUsedTagRef.current)
+      ? lastUsedTagRef.current : (tags.length > 0 ? tags[0].id : null);
+    const tagColor = defaultTagId ? tags.find((tg) => tg.id === defaultTagId)?.colorIndex : undefined;
     const newBlock = {
       id,
       title: "New Block",
       startSlot: empty.start,
       endSlot: empty.end,
-      colorIndex: getNextColor(blocks),
+      colorIndex: tagColor != null ? tagColor : getNextColor(blocks),
+      tagId: defaultTagId,
+      googleEventId: null,
     };
     setBlocks((prev) => [...prev, newBlock]);
     setEditingBlockId(id);
@@ -1390,7 +2181,7 @@ export default function Meridian() {
     hourLabels.push({ pct, label, hour: h });
   }
 
-  const isCurrentTimeVisible = currentTimePercent > 0 && currentTimePercent < 100;
+  const isCurrentTimeVisible = isToday && currentTimePercent > 0 && currentTimePercent < 100;
 
   return (
     <div style={{
@@ -1417,31 +2208,84 @@ export default function Meridian() {
         WebkitAppRegion: isElectron ? "drag" : undefined,
       }}>
         <div style={{
-          color: isLocked ? t.dateText : t.dateTextEdit,
-          fontSize: "13px",
-          fontFamily: "'DM Sans', sans-serif",
-          fontWeight: 300,
-          letterSpacing: "0.5px",
-          transition: "color 0.5s ease",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          WebkitAppRegion: "no-drag",
         }}>
-          {DATE_STR}
+          <div
+            onClick={() => navigateDate(addDays(selectedDate, -1))}
+            style={{
+              width: 24, height: 24, cursor: "pointer", display: "flex",
+              alignItems: "center", justifyContent: "center", borderRadius: "50%",
+              fontSize: "14px", color: isLocked ? t.dateText : t.dateTextEdit,
+              transition: "background 0.2s, color 0.5s ease",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+          >
+            ‹
+          </div>
+          <div style={{
+            color: isLocked ? t.dateText : t.dateTextEdit,
+            fontSize: "13px",
+            fontFamily: "'DM Sans', sans-serif",
+            fontWeight: 300,
+            letterSpacing: "0.5px",
+            transition: "color 0.5s ease",
+          }}>
+            {formatDateStr(selectedDate)}
+          </div>
+          <div
+            onClick={() => { if (!isToday) navigateDate(addDays(selectedDate, 1)); }}
+            style={{
+              width: 24, height: 24, cursor: isToday ? "default" : "pointer", display: "flex",
+              alignItems: "center", justifyContent: "center", borderRadius: "50%",
+              fontSize: "14px", color: isLocked ? t.dateText : t.dateTextEdit,
+              opacity: isToday ? 0.3 : 1,
+              transition: "background 0.2s, color 0.5s ease, opacity 0.3s ease",
+            }}
+            onMouseEnter={(e) => { if (!isToday) e.currentTarget.style.background = t.toggleHoverBg; }}
+            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+          >
+            ›
+          </div>
+          {!isToday && (
+            <div
+              onClick={() => navigateDate(todayStr())}
+              style={{
+                padding: "2px 10px", borderRadius: "12px",
+                fontSize: "11px", fontFamily: "'DM Sans', sans-serif",
+                color: t.noteText, background: t.toggleHoverBg,
+                cursor: "pointer", fontWeight: 400,
+                transition: "opacity 0.2s",
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+              onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+            >
+              Today
+            </div>
+          )}
         </div>
 
         {/* Right-side controls */}
         <div style={{ display: "flex", alignItems: "center", WebkitAppRegion: "no-drag" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginRight: isWinElectron ? 8 : 0 }}>
-            {/* Theme toggle — cycles light → dark → ink */}
+            {/* Theme toggle — collapses when locked */}
             <div
               onClick={() => setTheme((prev) => prev === "light" ? "dark" : prev === "dark" ? "ink" : "light")}
               style={{
-                width: 32, height: 32, cursor: "pointer", display: "flex",
+                width: isLocked ? 0 : 32, height: 32, cursor: "pointer", display: "flex",
                 alignItems: "center", justifyContent: "center", borderRadius: "50%",
-                transition: "background 0.3s ease",
+                transition: "width 0.3s ease, opacity 0.3s ease, background 0.3s ease",
+                opacity: isLocked ? 0 : 1,
+                overflow: "hidden",
+                pointerEvents: isLocked ? "none" : "auto",
               }}
-              onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+              onMouseEnter={(e) => { if (!isLocked) e.currentTarget.style.background = t.toggleHoverBg; }}
               onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease", flexShrink: 0 }}>
                 {theme === "light" ? (
                   <>
                     <circle cx="12" cy="12" r="5" />
@@ -1457,29 +2301,64 @@ export default function Meridian() {
                 ) : theme === "dark" ? (
                   <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                 ) : (
-                  <path d="M12 2C12 2 8 9 8 13a4 4 0 0 0 8 0c0-4-4-11-4-11z" />
+                  <path d="M12 2C12 2 8 9 8 13a4 4 0 0 0 8 0c0-4-4-11-4-11z" style={{ transform: "translateY(2px)" }} />
                 )}
               </svg>
             </div>
 
-            {/* Settings gear */}
+            {/* Settings gear — collapses when locked */}
             <div
               onClick={() => setShowSettings((prev) => !prev)}
               style={{
-                width: 32, height: 32, cursor: "pointer", display: "flex",
+                width: isLocked ? 0 : 32, height: 32, cursor: "pointer", display: "flex",
                 alignItems: "center", justifyContent: "center", borderRadius: "50%",
-                transition: "background 0.3s ease",
+                transition: "width 0.3s ease, opacity 0.3s ease, background 0.3s ease",
+                opacity: isLocked ? 0 : 1,
+                overflow: "hidden",
+                pointerEvents: isLocked ? "none" : "auto",
               }}
-              onMouseEnter={(e) => e.currentTarget.style.background = t.toggleHoverBg}
+              onMouseEnter={(e) => { if (!isLocked) e.currentTarget.style.background = t.toggleHoverBg; }}
               onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease", flexShrink: 0 }}>
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
             </div>
 
-            {/* Padlock toggle - long press */}
+            {/* Mute toggle — collapses when locked */}
+            <div
+              onClick={(e) => { e.stopPropagation(); setIsMuted((p) => !p); }}
+              title={isMuted ? "Unmute sounds" : "Mute sounds"}
+              style={{
+                width: isLocked ? 0 : 32, height: 32, cursor: "pointer", display: "flex",
+                alignItems: "center", justifyContent: "center", borderRadius: "50%",
+                transition: "width 0.3s ease, opacity 0.3s ease, background 0.3s ease",
+                opacity: isLocked ? 0 : 1,
+                overflow: "hidden",
+                pointerEvents: isLocked ? "none" : "auto",
+              }}
+              onMouseEnter={(e) => { if (!isLocked) e.currentTarget.style.background = t.toggleHoverBg; }}
+              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.toggleIcon} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "stroke 0.5s ease", flexShrink: 0 }}>
+                {isMuted ? (
+                  <>
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="23" y1="9" x2="17" y2="15" />
+                    <line x1="17" y1="9" x2="23" y2="15" />
+                  </>
+                ) : (
+                  <>
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  </>
+                )}
+              </svg>
+            </div>
+
+            {/* Padlock toggle - long press, fades when locked and mouse is idle */}
             <div
               onMouseDown={startLongPress}
               onMouseUp={endLongPress}
@@ -1487,6 +2366,8 @@ export default function Meridian() {
               style={{
                 position: "relative", width: 36, height: 36, cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",
+                opacity: isLocked ? (mouseMoving ? 0.6 : 0.15) : 1,
+                transition: "opacity 0.6s ease",
               }}
             >
               <svg width="36" height="36" style={{ position: "absolute", top: 0, left: 0, transform: "rotate(-90deg)" }}>
@@ -1685,11 +2566,72 @@ export default function Meridian() {
             </div>
           )}
 
+          {/* Calendar events (read-only, semi-transparent) */}
+          {calendarEvents.map((ev) => {
+            const posPct = (ev.startSlot / slots) * 100;
+            const sizePct = ((ev.endSlot - ev.startSlot) / slots) * 100;
+            const calLane = getLaneStyle(`cal_${ev.googleEventId}`, isVertical);
+            return (
+              <div
+                key={ev.googleEventId}
+                title={`${ev.title}${ev.meetingLink ? " · Click to join" : ""}`}
+                onClick={() => ev.meetingLink && window.open(ev.meetingLink, "_blank")}
+                style={{
+                  position: "absolute",
+                  ...(isVertical
+                    ? { top: `${posPct}%`, height: `${sizePct}%`, left: "4px", right: "4px" }
+                    : { left: `${posPct}%`, width: `${sizePct}%`, top: "4px", bottom: "4px" }),
+                  ...calLane,
+                  background: `${ev.calendarColor}30`,
+                  border: `1px dashed ${ev.calendarColor}80`,
+                  borderRadius: "6px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  zIndex: 1,
+                  cursor: ev.meetingLink ? "pointer" : "default",
+                  pointerEvents: "auto",
+                  overflow: "hidden",
+                }}
+              >
+                <div style={{
+                  display: "flex", alignItems: "center", gap: "4px",
+                  padding: "0 6px", overflow: "hidden",
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={ev.calendarColor} strokeWidth="2" style={{ flexShrink: 0 }}>
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                    <line x1="16" y1="2" x2="16" y2="6" />
+                    <line x1="8" y1="2" x2="8" y2="6" />
+                    <line x1="3" y1="10" x2="21" y2="10" />
+                  </svg>
+                  <span style={{
+                    fontSize: "10px",
+                    fontFamily: "'DM Sans', sans-serif",
+                    color: ev.calendarColor,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}>
+                    {ev.title}
+                  </span>
+                  {ev.meetingLink && (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={ev.calendarColor} strokeWidth="2" style={{ flexShrink: 0 }}>
+                      <polygon points="23 7 16 12 23 17 23 7" />
+                      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                    </svg>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
           {/* Time blocks */}
           {blocks.map((block) => {
             const posPct = (block.startSlot / slots) * 100;
             const sizePct = ((block.endSlot - block.startSlot) / slots) * 100;
-            const color = activeColors[block.colorIndex % activeColors.length];
+            const blockTag = block.tagId ? tags.find((tg) => tg.id === block.tagId) : null;
+            const effectiveColorIndex = blockTag ? blockTag.colorIndex : block.colorIndex;
+            const color = activeColors[effectiveColorIndex % activeColors.length];
             const blockBg = t.isInk
               ? (blocks.indexOf(block) % 2 === 0 ? t.inkBlockA : t.inkBlockB)
               : theme === "light" ? color.lightBg : color.bg;
@@ -1698,6 +2640,7 @@ export default function Meridian() {
             const pixelWidth = (blockSpan / slots) * timelineWidth;
             const isNarrow = pixelWidth < 80;
             const shouldRotateText = isNarrow && block.title.length > 5;
+            const blockLane = getLaneStyle(`block_${block.id}`, isVertical);
 
             return (
               <div
@@ -1726,6 +2669,7 @@ export default function Meridian() {
                         top: isLocked ? "4px" : "6px",
                         bottom: isLocked ? "4px" : "6px",
                       }),
+                  ...blockLane,
                   background: isLocked
                     ? (t.isInk || theme === "dark" ? blockBg : `linear-gradient(135deg, ${blockBg}dd, ${blockBg}aa)`)
                     : `${blockBg}cc`,
@@ -1738,8 +2682,8 @@ export default function Meridian() {
                   boxShadow: isLocked
                     ? (t.isInk || theme === "dark" ? "none" : `0 2px 12px ${blockBg}33, inset 0 1px 0 ${t.blockInsetHighlight}`)
                     : t.blockEditShadow,
-                  zIndex: reorderState?.blockId === block.id ? 20 : 2,
-                  overflow: "hidden",
+                  zIndex: reorderState?.blockId === block.id ? 20 : (isEditing ? 15 : 2),
+                  overflow: isEditing ? "visible" : "hidden",
                 }}
               >
                 {/* Resize handles (edit mode) */}
@@ -1818,65 +2762,179 @@ export default function Meridian() {
                   </div>
                 )}
 
-                {/* Block label */}
+                {/* Block label / editing overlay */}
                 {isEditing ? (
-                  <input
-                    ref={inputRef}
-                    value={block.title}
-                    onChange={(e) =>
-                      setBlocks((prev) =>
-                        prev.map((b) => (b.id === block.id ? { ...b, title: e.target.value } : b))
-                      )
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") setEditingBlockId(null);
-                      if (e.key === "Escape") {
-                        if (block.title === "New Block" || block.title === "") {
-                          deleteBlock(block.id);
-                        } else {
-                          setEditingBlockId(null);
-                        }
-                      }
-                    }}
-                    onBlur={() => {
-                      if (block.title === "") deleteBlock(block.id);
-                      else setEditingBlockId(null);
-                    }}
+                  <div
                     style={{
-                      background: "transparent",
-                      border: "none",
-                      outline: "none",
-                      color: t.inputText,
-                      fontSize: isNarrow ? "10px" : "13px",
-                      fontFamily: "'Outfit', sans-serif",
-                      fontWeight: 500,
-                      textAlign: "center",
-                      width: "90%",
-                      caretColor: t.caretColor,
+                      position: "absolute", top: 0, bottom: 0,
+                      left: "50%", transform: "translateX(-50%)",
+                      minWidth: isNarrow ? "160px" : "100%",
+                      width: "100%",
+                      backdropFilter: "blur(8px)",
+                      background: theme === "light" ? "rgba(240,232,223,0.95)" : theme === "ink" ? "rgba(245,243,240,0.95)" : "rgba(26,26,30,0.95)",
+                      borderRadius: "6px",
+                      display: "flex", flexDirection: "column", alignItems: "center",
+                      zIndex: 5,
+                      boxShadow: isNarrow ? t.blockEditShadow : "none",
                     }}
+                    onMouseDown={(e) => { if (e.target !== e.currentTarget) return; e.preventDefault(); }}
                     onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <span
-                    style={{
-                      color: t.blockLabelText,
-                      fontSize: isNarrow ? "9px" : isLocked ? "14px" : "12px",
-                      fontFamily: "'Outfit', sans-serif",
-                      fontWeight: isLocked ? 400 : 500,
-                      letterSpacing: isLocked ? "0.3px" : "0",
-                      whiteSpace: "normal",
-                      wordBreak: "break-word",
-                      lineHeight: "1.2",
-                      overflow: "hidden",
-                      padding: "0 8px",
-                      textAlign: "center",
-                      transition: "all 0.3s ease",
-                      pointerEvents: "none",
-                      writingMode: (!isVertical && shouldRotateText) ? "vertical-rl" : "horizontal-tb",
-                    }}
                   >
-                    {block.title}
-                  </span>
+                    <input
+                      ref={inputRef}
+                      value={block.title}
+                      onChange={(e) =>
+                        setBlocks((prev) =>
+                          prev.map((b) => (b.id === block.id ? { ...b, title: e.target.value } : b))
+                        )
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") setEditingBlockId(null);
+                        if (e.key === "Escape") {
+                          if (block.title === "New Block" || block.title === "") {
+                            deleteBlock(block.id);
+                          } else {
+                            setEditingBlockId(null);
+                          }
+                        }
+                      }}
+                      onBlur={(e) => {
+                        // Don't close if clicking inside the same block (e.g. tag selector)
+                        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("[data-block]")) return;
+                        if (block.title === "") deleteBlock(block.id);
+                        else setEditingBlockId(null);
+                      }}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        outline: "none",
+                        color: t.inputText,
+                        fontSize: isNarrow ? "10px" : "13px",
+                        fontFamily: "'Outfit', sans-serif",
+                        fontWeight: 500,
+                        textAlign: "center",
+                        width: "90%",
+                        caretColor: t.caretColor,
+                        flexShrink: 0,
+                        padding: "6px 0 4px",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    {tags.length > 0 && (
+                      <div
+                        style={{
+                          flex: 1, display: "flex", flexWrap: "wrap",
+                          justifyContent: "center", alignItems: "center",
+                          gap: "6px", padding: "4px 8px",
+                          overflowY: "auto",
+                        }}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {tags.map((tg) => {
+                          const tagColor = activeColors[tg.colorIndex % activeColors.length];
+                          const isSelected = block.tagId === tg.id;
+                          return (
+                            <div
+                              key={tg.id}
+                              title={tg.name}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                lastUsedTagRef.current = tg.id;
+                                setBlocks((prev) =>
+                                  prev.map((b) => b.id === block.id
+                                    ? { ...b, tagId: tg.id, colorIndex: tg.colorIndex }
+                                    : b
+                                  )
+                                );
+                              }}
+                              style={{
+                                padding: "2px 8px",
+                                borderRadius: "10px",
+                                background: isSelected
+                                  ? (theme === "light" ? tagColor.lightBg : tagColor.bg)
+                                  : `${theme === "light" ? tagColor.lightBg : tagColor.bg}60`,
+                                border: isSelected ? `1.5px solid ${t.blockLabelText}` : `1px solid ${t.handleColor}`,
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                                fontSize: "9px",
+                                fontFamily: "'DM Sans', sans-serif",
+                                color: t.blockLabelText,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {tg.name}
+                            </div>
+                          );
+                        })}
+                        {block.tagId && (
+                          <div
+                            title="Remove tag"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setBlocks((prev) =>
+                                prev.map((b) => b.id === block.id
+                                  ? { ...b, tagId: null }
+                                  : b
+                                )
+                              );
+                            }}
+                            style={{
+                              padding: "2px 6px",
+                              borderRadius: "10px",
+                              background: "transparent",
+                              border: `1px dashed ${t.handleColor}`,
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "9px",
+                              color: t.quoteMuted,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ×
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{
+                    display: "flex", flexDirection: "column", alignItems: "center",
+                    gap: "1px", pointerEvents: "none", overflow: "hidden",
+                  }}>
+                    <span
+                      style={{
+                        color: t.blockLabelText,
+                        fontSize: isNarrow ? "9px" : isLocked ? "14px" : "12px",
+                        fontFamily: "'Outfit', sans-serif",
+                        fontWeight: isLocked ? 400 : 500,
+                        letterSpacing: isLocked ? "0.3px" : "0",
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
+                        lineHeight: "1.2",
+                        overflow: "hidden",
+                        padding: "0 8px",
+                        textAlign: "center",
+                        transition: "all 0.3s ease",
+                        writingMode: (!isVertical && shouldRotateText) ? "vertical-rl" : "horizontal-tb",
+                      }}
+                    >
+                      {block.title}
+                    </span>
+                    {blockTag && !isNarrow && (
+                      <span style={{
+                        fontSize: "9px",
+                        fontFamily: "'DM Sans', sans-serif",
+                        color: t.timeRangeText,
+                        whiteSpace: "nowrap",
+                        writingMode: (!isVertical && shouldRotateText) ? "vertical-rl" : "horizontal-tb",
+                      }}>
+                        {blockTag.name}
+                      </span>
+                    )}
+                  </div>
                 )}
 
                 {/* Time range tooltip (edit mode) */}
@@ -1975,7 +3033,7 @@ export default function Meridian() {
             margin: "0 auto",
             transition: "color 0.5s ease",
           }}>
-            &ldquo;{mergedQuotes[quoteData.index % mergedQuotes.length].text}&rdquo;
+            &ldquo;{mergedQuotes[quoteIndex].text}&rdquo;
           </div>
           <div style={{
             fontFamily: "'DM Sans', sans-serif",
@@ -1986,7 +3044,7 @@ export default function Meridian() {
             opacity: 0.7,
             transition: "color 0.5s ease",
           }}>
-            — {mergedQuotes[quoteData.index % mergedQuotes.length].author}
+            — {mergedQuotes[quoteIndex].author}
           </div>
         </div>
       )}
@@ -1999,16 +3057,17 @@ export default function Meridian() {
           flexDirection: "column",
           padding: "0 24px 16px",
           minHeight: 0,
-          maxWidth: "700px",
+          maxWidth: tags.length <= 2 ? "700px" : `${tags.length * 340}px`,
           width: "100%",
           margin: "0 auto",
+          transition: "max-width 0.3s ease",
         }}>
           <div style={{
             borderTop: `1px solid ${t.noteBorder}`,
             marginBottom: "8px",
             transition: "border-color 0.5s ease",
           }} />
-          <Notepad theme={t} onCloudSave={saveToCloud} notesVersion={notesVersion} />
+          <NotepadArea theme={t} tags={tags} activeColors={activeColors} onCloudSave={saveToCloud} notesVersion={notesVersion} isMuted={isMuted} setIsMuted={setIsMuted} />
         </div>
       )}
 
@@ -2100,6 +3159,121 @@ export default function Meridian() {
                     ))}
                   </select>
                 </div>
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div>
+              <div style={{ color: t.noteText, fontSize: "13px", fontWeight: 500, marginBottom: "12px" }}>
+                Tags
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {tags.map((tg) => {
+                  const tagColor = activeColors[tg.colorIndex % activeColors.length];
+                  const blocksWithTag = blocks.filter((b) => b.tagId === tg.id).length;
+                  return (
+                    <div key={tg.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      {/* Color swatches — click to change tag color */}
+                      <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
+                        {activeColors.map((c, ci) => (
+                          <div
+                            key={ci}
+                            onClick={() => {
+                              setTags((prev) => prev.map((pt) =>
+                                pt.id === tg.id ? { ...pt, colorIndex: ci } : pt
+                              ));
+                            }}
+                            style={{
+                              width: tg.colorIndex === ci ? "14px" : "10px",
+                              height: tg.colorIndex === ci ? "14px" : "10px",
+                              borderRadius: "50%",
+                              background: theme === "light" ? c.lightBg : c.bg,
+                              border: tg.colorIndex === ci ? `2px solid ${t.noteText}` : "1px solid transparent",
+                              cursor: "pointer",
+                              transition: "all 0.15s ease",
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <div style={{
+                        flex: 1, color: t.noteText, fontSize: "13px",
+                        fontFamily: "'DM Sans', sans-serif",
+                      }}>
+                        {tg.name}
+                      </div>
+                      <div
+                        onClick={() => {
+                          const count = blocks.filter((b) => b.tagId === tg.id).length;
+                          if (count > 0 && !window.confirm(`Remove tag from ${count} block${count > 1 ? "s" : ""}?`)) return;
+                          // Snapshot colorIndex on blocks that had this tag, then remove tag
+                          setBlocks((prev) => prev.map((b) =>
+                            b.tagId === tg.id ? { ...b, tagId: null, colorIndex: tg.colorIndex } : b
+                          ));
+                          setTags((prev) => prev.filter((pt) => pt.id !== tg.id));
+                        }}
+                        style={{
+                          width: "20px", height: "20px", borderRadius: "50%",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          cursor: "pointer", fontSize: "12px", color: t.quoteMuted,
+                          transition: "opacity 0.2s",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.opacity = "0.6"}
+                        onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                      >
+                        ×
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* Add tag row */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const input = e.target.elements.tagName;
+                    const name = input.value.trim();
+                    if (!name) return;
+                    // Cycle through colors — pick next unused color
+                    const usedColors = tags.map((tg) => tg.colorIndex);
+                    let colorIndex = 0;
+                    for (let i = 0; i < activeColors.length; i++) {
+                      if (!usedColors.includes(i)) { colorIndex = i; break; }
+                      if (i === activeColors.length - 1) colorIndex = (tags.length) % activeColors.length;
+                    }
+                    setTags((prev) => [...prev, {
+                      id: `tag_${Date.now()}`,
+                      name,
+                      colorIndex,
+                    }]);
+                    input.value = "";
+                  }}
+                  style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "4px" }}
+                >
+                  <input
+                    name="tagName"
+                    placeholder="New tag..."
+                    maxLength={24}
+                    style={{
+                      flex: 1, padding: "6px 10px", borderRadius: "6px",
+                      border: t.timelineBorder, background: t.noteBg,
+                      color: t.noteText, fontSize: "13px",
+                      fontFamily: "'DM Sans', sans-serif", outline: "none",
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    style={{
+                      padding: "6px 12px", borderRadius: "6px",
+                      border: t.timelineBorder, background: t.noteBg,
+                      color: t.noteText, fontSize: "12px",
+                      fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                      transition: "opacity 0.2s",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                    onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                  >
+                    Add
+                  </button>
+                </form>
               </div>
             </div>
 
@@ -2286,6 +3460,118 @@ export default function Meridian() {
                 </div>
               )}
             </div>
+
+            {/* Google Calendar */}
+            {user && (
+              <div style={{ borderTop: `1px solid ${t.timelineBorder}`, paddingTop: "20px" }}>
+                <div style={{ color: t.noteText, fontSize: "13px", fontWeight: 500, marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  Google Calendar
+                  <span style={{ fontSize: "9px", color: t.quoteMuted, border: `1px solid ${t.timelineBorder}`, borderRadius: "4px", padding: "1px 5px", fontWeight: 400 }}>beta</span>
+                </div>
+                {!calendarEnabled ? (
+                  <div>
+                    <div style={{ color: t.quoteMuted, fontSize: "11px", marginBottom: "12px" }}>
+                      Sync your Google Calendar events to your timeline
+                    </div>
+                    <button
+                      onClick={() => { connectCalendar(); }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                        width: "100%", padding: "10px 16px", borderRadius: "8px",
+                        border: t.timelineBorder, background: t.noteBg,
+                        color: t.noteText, fontSize: "13px",
+                        fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                        transition: "opacity 0.2s",
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                      onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.noteText} strokeWidth="2">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                        <line x1="16" y1="2" x2="16" y2="6" />
+                        <line x1="8" y1="2" x2="8" y2="6" />
+                        <line x1="3" y1="10" x2="21" y2="10" />
+                      </svg>
+                      Connect Calendar
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {/* Calendar list */}
+                    {availableCalendars.length > 0 ? (
+                      <div>
+                        <div style={{ color: t.quoteMuted, fontSize: "11px", marginBottom: "6px" }}>Your calendars</div>
+                        {availableCalendars.map((cal) => (
+                          <label
+                            key={cal.id}
+                            style={{
+                              display: "flex", alignItems: "center", gap: "8px",
+                              padding: "4px 0", cursor: "pointer", fontSize: "12px", color: t.noteText,
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={calendarIds.includes(cal.id)}
+                              onChange={() => {
+                                setCalendarIds((prev) =>
+                                  prev.includes(cal.id) ? prev.filter((id) => id !== cal.id) : [...prev, cal.id]
+                                );
+                              }}
+                              style={{ accentColor: cal.backgroundColor || t.noteText, cursor: "pointer" }}
+                            />
+                            <div style={{
+                              width: "8px", height: "8px", borderRadius: "50%",
+                              background: cal.backgroundColor || "#4285F4", flexShrink: 0,
+                            }} />
+                            {cal.summary}
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color: t.quoteMuted, fontSize: "11px" }}>
+                        Loading calendars...
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        onClick={() => fetchCalendars()}
+                        style={{
+                          padding: "6px 12px", borderRadius: "6px",
+                          border: t.timelineBorder, background: "transparent",
+                          color: t.quoteMuted, fontSize: "11px",
+                          fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                          transition: "opacity 0.2s",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                        onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                      >
+                        Refresh
+                      </button>
+                      <button
+                        onClick={() => {
+                          setCalendarEnabled(false);
+                          setCalendarIds([]);
+                          setAvailableCalendars([]);
+                          setCalendarEvents([]);
+                          localStorage.removeItem("timeblock-cal-provider-token");
+                        }}
+                        style={{
+                          padding: "6px 12px", borderRadius: "6px",
+                          border: t.timelineBorder, background: "transparent",
+                          color: t.quoteMuted, fontSize: "11px",
+                          fontFamily: "'DM Sans', sans-serif", cursor: "pointer",
+                          transition: "opacity 0.2s",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                        onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
     </div>
   );
