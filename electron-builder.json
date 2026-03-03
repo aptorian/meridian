@@ -16,7 +16,7 @@
     "icon": "build/meridian-icon.png"
   },
   "dmg": {
-    "artifactName": "${productName}-${version}.${ext}",
+    "artifactName": "${productName}.${ext}",
     "contents": [
       { "x": 130, "y": 220 },
       { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
@@ -25,7 +25,7 @@
   "win": {
     "target": ["nsis"],
     "icon": "build/meridian-icon.png",
-    "artifactName": "${productName}-Setup-${version}.${ext}"
+    "artifactName": "${productName}-Setup.${ext}"
   },
   "nsis": {
     "oneClick": true,
