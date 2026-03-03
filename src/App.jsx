@@ -940,7 +940,7 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
         }}
         onKeyDown={handleKeyDown}
         onMouseUp={updateFmtState}
-        data-placeholder="Notes..."
+        data-placeholder=""
         style={{
           flex: 1,
           outline: "none",
@@ -1053,6 +1053,9 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
           margin-right: 6px;
           position: relative;
           top: -1px;
+        }
+        [data-block]:hover .tag-dot-trigger {
+          opacity: 1 !important;
         }
         [contenteditable] input[type="checkbox"]:checked {
           background: ${t.noteText};
@@ -1198,6 +1201,7 @@ export default function Meridian() {
   const [longPressProgress, setLongPressProgress] = useState(0);
   const [editingBlockId, setEditingBlockId] = useState(null);
   const [hoveredSlot, setHoveredSlot] = useState(null);
+  const [tagPopoverBlockId, setTagPopoverBlockId] = useState(null);
   const [currentTimePercent, setCurrentTimePercent] = useState(0);
   const [dragState, setDragState] = useState(null);
   const [resizeState, setResizeState] = useState(null);
@@ -1277,6 +1281,7 @@ export default function Meridian() {
     }
     return Math.abs(hash) % Math.max(1, mergedQuotes.length);
   }, [selectedDate, mergedQuotes.length]);
+  const [quoteOverride, setQuoteOverride] = useState(null);
   // Persist quote categories
   useEffect(() => {
     try { localStorage.setItem("timeblock-quote-categories", JSON.stringify(quoteCategories)); } catch {}
@@ -1311,20 +1316,21 @@ export default function Meridian() {
   const longPressRef = useRef(null);
   const longPressAnimRef = useRef(null);
   const inputRef = useRef(null);
+  const lastDragEndRef = useRef(0);
   const nextIdRef = useRef(
     blocks.reduce((max, b) => {
       const num = parseInt(b.id, 10);
       return isNaN(num) ? max : Math.max(max, num);
     }, 0) + 1
   );
-  // Recompute nextIdRef when date changes and blocks are loaded
+  // Recompute nextIdRef when date changes or blocks are loaded (including cloud sync)
   useEffect(() => {
     const max = blocks.reduce((m, b) => {
       const num = parseInt(b.id, 10);
       return isNaN(num) ? m : Math.max(m, num);
     }, 0);
-    nextIdRef.current = max + 1;
-  }, [selectedDate]);
+    nextIdRef.current = Math.max(nextIdRef.current, max + 1);
+  }, [selectedDate, blocks]);
 
   // --- Auth & Cloud Sync ---
   const [user, setUser] = useState(null);
@@ -1925,6 +1931,7 @@ export default function Meridian() {
     setDragState(null);
     setResizeState(null);
     setReorderState(null);
+    setQuoteOverride(null);
   }, []);
 
   // Clamp blocks when day range changes
@@ -2048,6 +2055,7 @@ export default function Meridian() {
   // Click empty space to create block
   function handleTimelineClick(e) {
     if (isLocked || dragState || resizeState || reorderState) return;
+    if (Date.now() - lastDragEndRef.current < 200) return;
     if (e.target.closest("[data-block]")) return;
     const slot = Math.min(getSlotFromPointer(e), slots - 1);
     const empty = findEmptySlot(blocks, slot, slots);
@@ -2119,6 +2127,7 @@ export default function Meridian() {
       );
     }
     function onUp() {
+      lastDragEndRef.current = Date.now();
       setResizeState(null);
     }
     window.addEventListener("mousemove", onMove);
@@ -2127,7 +2136,7 @@ export default function Meridian() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [resizeState, blocks]);
+  }, [resizeState, isVertical, slots]);
 
   // Reorder / drag block
   function startReorder(e, blockId) {
@@ -2147,23 +2156,23 @@ export default function Meridian() {
     if (!reorderState) return;
     function onMove(e) {
       const slot = isVertical ? getSlotFromY(e.clientY) : getSlotFromX(e.clientX);
-      const block = blocks.find((b) => b.id === reorderState.blockId);
-      if (!block) return;
-      const width = block.endSlot - block.startSlot;
-      let newStart = slot - reorderState.offsetSlots;
-      newStart = Math.max(0, Math.min(slots - width, newStart));
-      if (!blocksOverlap(blocks, newStart, newStart + width, block.id)) {
-        setReorderState((prev) => ({ ...prev, currentStart: newStart }));
-        setBlocks((prev) =>
-          prev.map((b) =>
-            b.id === reorderState.blockId
-              ? { ...b, startSlot: newStart, endSlot: newStart + width }
-              : b
-          )
+      setBlocks((prev) => {
+        const block = prev.find((b) => b.id === reorderState.blockId);
+        if (!block) return prev;
+        const width = block.endSlot - block.startSlot;
+        let newStart = slot - reorderState.offsetSlots;
+        newStart = Math.max(0, Math.min(slots - width, newStart));
+        if (blocksOverlap(prev, newStart, newStart + width, block.id)) return prev;
+        setReorderState((rs) => ({ ...rs, currentStart: newStart }));
+        return prev.map((b) =>
+          b.id === reorderState.blockId
+            ? { ...b, startSlot: newStart, endSlot: newStart + width }
+            : b
         );
-      }
+      });
     }
     function onUp() {
+      lastDragEndRef.current = Date.now();
       setReorderState(null);
     }
     window.addEventListener("mousemove", onMove);
@@ -2172,7 +2181,22 @@ export default function Meridian() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [reorderState, blocks]);
+  }, [reorderState, isVertical, slots]);
+
+  // Close tag popover on click outside or lock
+  useEffect(() => {
+    if (!tagPopoverBlockId) return;
+    function onDown(e) {
+      if (e.target.closest && e.target.closest("[data-tag-popover]")) return;
+      if (e.target.closest && e.target.closest(".tag-dot-trigger")) return;
+      setTagPopoverBlockId(null);
+    }
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [tagPopoverBlockId]);
+  useEffect(() => {
+    if (isLocked) setTagPopoverBlockId(null);
+  }, [isLocked]);
 
   // Delete block
   function deleteBlock(id) {
@@ -2670,7 +2694,7 @@ export default function Meridian() {
             const effectiveColorIndex = blockTag ? blockTag.colorIndex : block.colorIndex;
             const color = activeColors[effectiveColorIndex % activeColors.length];
             const blockBg = t.isInk
-              ? (blocks.indexOf(block) % 2 === 0 ? t.inkBlockA : t.inkBlockB)
+              ? ((parseInt(block.id, 10) || 0) % 2 === 0 ? t.inkBlockA : t.inkBlockB)
               : theme === "light" ? color.lightBg : color.bg;
             const isEditing = editingBlockId === block.id;
             const blockSpan = block.endSlot - block.startSlot;
@@ -2735,7 +2759,7 @@ export default function Meridian() {
                           ? { top: 0, left: 0, right: 0, height: "8px", cursor: "ns-resize" }
                           : { left: 0, top: 0, bottom: 0, width: "8px", cursor: "ew-resize" }),
                         background: "transparent",
-                        zIndex: 3,
+                        zIndex: 6,
                       }}
                     >
                       <div style={{
@@ -2756,7 +2780,7 @@ export default function Meridian() {
                           ? { bottom: 0, left: 0, right: 0, height: "8px", cursor: "ns-resize" }
                           : { right: 0, top: 0, bottom: 0, width: "8px", cursor: "ew-resize" }),
                         background: "transparent",
-                        zIndex: 3,
+                        zIndex: 6,
                       }}
                     >
                       <div style={{
@@ -2838,8 +2862,15 @@ export default function Meridian() {
                       onBlur={(e) => {
                         // Don't close if clicking inside the same block (e.g. tag selector)
                         if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("[data-block]")) return;
-                        if (block.title === "") deleteBlock(block.id);
-                        else setEditingBlockId(null);
+                        // Delete blocks with no meaningful title
+                        if (block.title === "" || block.title === "New Block") {
+                          deleteBlock(block.id);
+                        } else {
+                          // Use setTimeout to avoid overriding editingBlockId if the user
+                          // clicked empty space to create a new block (which sets editingBlockId
+                          // to the new block's id — we don't want to clobber that with null)
+                          setTimeout(() => setEditingBlockId((cur) => cur === block.id ? null : cur), 0);
+                        }
                       }}
                       style={{
                         background: "transparent",
@@ -2857,84 +2888,6 @@ export default function Meridian() {
                       }}
                       onClick={(e) => e.stopPropagation()}
                     />
-                    {tags.length > 0 && (
-                      <div
-                        style={{
-                          flex: 1, display: "flex", flexWrap: "wrap",
-                          justifyContent: "center", alignItems: "center",
-                          gap: "6px", padding: "4px 8px",
-                          overflowY: "auto",
-                        }}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {tags.map((tg) => {
-                          const tagColor = activeColors[tg.colorIndex % activeColors.length];
-                          const isSelected = block.tagId === tg.id;
-                          return (
-                            <div
-                              key={tg.id}
-                              title={tg.name}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                lastUsedTagRef.current = tg.id;
-                                setBlocks((prev) =>
-                                  prev.map((b) => b.id === block.id
-                                    ? { ...b, tagId: tg.id, colorIndex: tg.colorIndex }
-                                    : b
-                                  )
-                                );
-                              }}
-                              style={{
-                                padding: "2px 8px",
-                                borderRadius: "10px",
-                                background: isSelected
-                                  ? (theme === "light" ? tagColor.lightBg : tagColor.bg)
-                                  : `${theme === "light" ? tagColor.lightBg : tagColor.bg}60`,
-                                border: isSelected ? `1.5px solid ${t.blockLabelText}` : `1px solid ${t.handleColor}`,
-                                cursor: "pointer",
-                                transition: "all 0.15s ease",
-                                fontSize: "9px",
-                                fontFamily: "'DM Sans', sans-serif",
-                                color: t.blockLabelText,
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {tg.name}
-                            </div>
-                          );
-                        })}
-                        {block.tagId && (
-                          <div
-                            title="Remove tag"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setBlocks((prev) =>
-                                prev.map((b) => b.id === block.id
-                                  ? { ...b, tagId: null }
-                                  : b
-                                )
-                              );
-                            }}
-                            style={{
-                              padding: "2px 6px",
-                              borderRadius: "10px",
-                              background: "transparent",
-                              border: `1px dashed ${t.handleColor}`,
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              fontSize: "9px",
-                              color: t.quoteMuted,
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            ×
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <div style={{
@@ -2989,9 +2942,182 @@ export default function Meridian() {
                     {formatTime(slotToMinutes(block.startSlot, hoursStart))} – {formatTime(slotToMinutes(block.endSlot, hoursStart))}
                   </div>
                 )}
+
+                {/* Tag indicator dot (edit mode, hover-triggered) */}
+                {!isLocked && tags.length > 0 && (
+                  <div
+                    className="tag-dot-trigger"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTagPopoverBlockId((prev) => prev === block.id ? null : block.id);
+                    }}
+                    onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                    style={{
+                      position: "absolute",
+                      ...(isVertical
+                        ? { bottom: "10px", right: "4px" }
+                        : { bottom: "4px", right: "4px" }),
+                      width: "16px",
+                      height: "16px",
+                      borderRadius: "50%",
+                      background: blockTag
+                        ? (theme === "light" ? color.lightBg : color.bg)
+                        : t.handleColor,
+                      border: tagPopoverBlockId === block.id
+                        ? `2px solid ${t.blockLabelText}`
+                        : `1.5px solid ${t.handleColor}`,
+                      cursor: "pointer",
+                      opacity: tagPopoverBlockId === block.id ? 1 : 0,
+                      transition: "opacity 0.15s ease",
+                      zIndex: 7,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "10px",
+                      color: t.blockLabelText,
+                      lineHeight: 1,
+                    }}
+                  >
+                    #
+                  </div>
+                )}
               </div>
             );
           })}
+
+          {/* Tag popover (rendered at timeline level to avoid overflow clipping) */}
+          {tagPopoverBlockId && tags.length > 0 && (() => {
+            const popoverBlock = blocks.find((b) => b.id === tagPopoverBlockId);
+            if (!popoverBlock) return null;
+            const popPosPct = (popoverBlock.startSlot / slots) * 100;
+            const popSizePct = ((popoverBlock.endSlot - popoverBlock.startSlot) / slots) * 100;
+            return (
+              <div
+                data-tag-popover="true"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  ...(isVertical
+                    ? {
+                        top: `calc(${popPosPct + popSizePct}% + 4px)`,
+                        right: "4px",
+                        minWidth: "120px",
+                      }
+                    : {
+                        left: `calc(${popPosPct + popSizePct}% + 4px)`,
+                        bottom: "4px",
+                        minWidth: "120px",
+                      }),
+                  background: theme === "light" ? "rgba(240,232,223,0.97)" : theme === "ink" ? "rgba(245,243,240,0.97)" : "rgba(30,30,34,0.97)",
+                  backdropFilter: "blur(12px)",
+                  borderRadius: "8px",
+                  boxShadow: theme === "light"
+                    ? "0 4px 16px rgba(0,0,0,0.12)"
+                    : "0 4px 16px rgba(0,0,0,0.4)",
+                  padding: "6px",
+                  zIndex: 25,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                }}
+              >
+                {tags.map((tg) => {
+                  const tagColor = activeColors[tg.colorIndex % activeColors.length];
+                  const isSelected = popoverBlock.tagId === tg.id;
+                  return (
+                    <div
+                      key={tg.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        lastUsedTagRef.current = tg.id;
+                        setBlocks((prev) =>
+                          prev.map((b) => b.id === tagPopoverBlockId
+                            ? { ...b, tagId: tg.id, colorIndex: tg.colorIndex }
+                            : b
+                          )
+                        );
+                        setTagPopoverBlockId(null);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "5px 10px",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        background: isSelected
+                          ? (theme === "light" ? `${tagColor.lightBg}` : `${tagColor.bg}40`)
+                          : "transparent",
+                        transition: "background 0.1s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = theme === "light" ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <div style={{
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "50%",
+                        background: theme === "light" ? tagColor.lightBg : tagColor.bg,
+                        flexShrink: 0,
+                      }} />
+                      <span style={{
+                        fontSize: "11px",
+                        fontFamily: "'DM Sans', sans-serif",
+                        color: t.blockLabelText,
+                        whiteSpace: "nowrap",
+                      }}>
+                        {tg.name}
+                      </span>
+                      {isSelected && (
+                        <span style={{ marginLeft: "auto", fontSize: "11px", color: t.blockLabelText }}>✓</span>
+                      )}
+                    </div>
+                  );
+                })}
+                {popoverBlock.tagId && (
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setBlocks((prev) =>
+                        prev.map((b) => b.id === tagPopoverBlockId
+                          ? { ...b, tagId: null }
+                          : b
+                        )
+                      );
+                      setTagPopoverBlockId(null);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "5px 10px",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      borderTop: `1px solid ${t.handleColor}`,
+                      marginTop: "2px",
+                      paddingTop: "7px",
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = theme === "light" ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)"}
+                    onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                  >
+                    <span style={{
+                      fontSize: "11px",
+                      fontFamily: "'DM Sans', sans-serif",
+                      color: t.quoteMuted,
+                      whiteSpace: "nowrap",
+                    }}>
+                      Remove tag
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Current time marker */}
           {isCurrentTimeVisible && (
@@ -3038,7 +3164,7 @@ export default function Meridian() {
             transition: "opacity 0.5s ease",
             opacity: isLocked ? 0 : 1,
           }}>
-            click empty space to add · double-click to rename · drag edges to resize · long-press lock to toggle
+            click empty space to add · double-click to rename · drag edges to resize
           </div>
         )}
       </div>
@@ -3046,12 +3172,13 @@ export default function Meridian() {
       {/* Quote (hidden in vertical/mobile mode) */}
       {!isVertical && mergedQuotes.length > 0 && (
         <div
-          onClick={() => setQuoteData((prev) => {
-            if (mergedQuotes.length <= 1) return prev;
+          onClick={() => {
+            if (mergedQuotes.length <= 1) return;
+            const current = quoteOverride != null ? quoteOverride : quoteIndex;
             let next;
-            do { next = Math.floor(Math.random() * mergedQuotes.length); } while (next === prev.index);
-            return { ...prev, index: next };
-          })}
+            do { next = Math.floor(Math.random() * mergedQuotes.length); } while (next === current);
+            setQuoteOverride(next);
+          }}
           title="Click for another quote"
           style={{
             textAlign: "center",
@@ -3070,7 +3197,7 @@ export default function Meridian() {
             margin: "0 auto",
             transition: "color 0.5s ease",
           }}>
-            &ldquo;{mergedQuotes[quoteIndex].text}&rdquo;
+            &ldquo;{mergedQuotes[quoteOverride != null ? quoteOverride : quoteIndex].text}&rdquo;
           </div>
           <div style={{
             fontFamily: "'DM Sans', sans-serif",
@@ -3081,7 +3208,7 @@ export default function Meridian() {
             opacity: 0.7,
             transition: "color 0.5s ease",
           }}>
-            — {mergedQuotes[quoteIndex].author}
+            — {mergedQuotes[quoteOverride != null ? quoteOverride : quoteIndex].author}
           </div>
         </div>
       )}
