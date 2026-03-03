@@ -67,10 +67,22 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - localStorage keys prefixed with `timeblock-`
 - All inline styles (no CSS modules or styled-components)
 
-## CI/CD
-- **Vercel**: auto-deploys from `main` branch (web app)
-- **GitHub Actions** (`release.yml`): triggered by `v*` tags → builds Windows .exe + macOS .dmg → creates GitHub Release
-- Release command: `git tag -a v1.x.x -m "message" && git push origin v1.x.x`
+## CI/CD & Releases
+- **Vercel**: auto-deploys from `main` branch (web app at meridian.aptorian.com)
+- **GitHub Actions** (`.github/workflows/release.yml`): "Build & Release" workflow
+  - Triggered automatically by pushing any `v*` tag to GitHub
+  - Builds **both** macOS .dmg and Windows .exe via matrix (macos-latest + windows-latest runners)
+  - Uploads both installers to the GitHub Release automatically
+  - Uses `softprops/action-gh-release@v2` with `generate_release_notes: true`
+  - Supabase env vars injected from GitHub repo secrets during Vite build step
+  - **DO NOT build desktop apps locally** — just push the tag and CI handles everything
+- **Release process** (version bump → all platforms):
+  1. Bump `version` in `package.json`, commit and push to `main`
+  2. Create release: `gh release create v1.x.x --title "v1.x.x" --generate-notes`
+     - This creates the git tag, which triggers the CI workflow
+  3. CI builds both .dmg and .exe and attaches them to the release automatically
+  4. Vercel deploys the web app from the same `main` push
+  5. Existing desktop users get update prompts via the in-app update checker (`electron/main.js` checks GitHub releases API on launch)
 - Download links in Settings point to `github.com/aptorian/meridian/releases/latest/download/`
 
 ## External Services
@@ -80,11 +92,10 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - **GitHub**: `https://github.com/aptorian/meridian`
 
 ## Dev Setup
-- Working directory: `E:\Repos\meridian-clone`
+- Working directory (Mac): `/Users/adam/Downloads/meridian`
+- Working directory (Windows): `E:\Repos\meridian-clone`
 - `npm run dev` — Vite dev server (port 5173)
-- `npm run build` — Production build
+- `npm run build` — Production build (web only)
 - `npm run dev:electron` — Electron + Vite concurrently
-- `npm run build:electron` — Full Electron build (may fail locally; use CI instead)
+- `npm run build:electron` — Local Electron build (use CI instead for releases)
 - PowerShell on Windows: use `;` not `&&` to chain commands
-- Bash tool can access paths via `cd "E:/Repos/meridian-clone"` with `export PATH="/c/Program Files/nodejs:$PATH"`
-- PowerShell via: `"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "cd E:\Repos\meridian-clone; ..."`
