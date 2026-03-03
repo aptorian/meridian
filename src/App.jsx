@@ -1234,6 +1234,7 @@ export default function Meridian() {
   const totalHours = hoursEnd - hoursStart;
   const slots = totalHours * (60 / SLOT_MINUTES);
   const [showSettings, setShowSettings] = useState(false);
+  const [showMacHelp, setShowMacHelp] = useState(false);
   const [isVertical, setIsVertical] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 700px)").matches
   );
@@ -3239,8 +3240,22 @@ export default function Meridian() {
                       if (!usedColors.includes(i)) { colorIndex = i; break; }
                       if (i === activeColors.length - 1) colorIndex = (tags.length) % activeColors.length;
                     }
+                    const newTagId = `tag_${Date.now()}`;
+                    // If this is the first tag, migrate _general notes to it
+                    if (tags.length === 0) {
+                      try {
+                        const raw = localStorage.getItem("timeblock-notes");
+                        if (raw) {
+                          const parsed = JSON.parse(raw);
+                          if (parsed && parsed["_general"]) {
+                            parsed[newTagId] = parsed["_general"];
+                            localStorage.setItem("timeblock-notes", JSON.stringify(parsed));
+                          }
+                        }
+                      } catch {}
+                    }
                     setTags((prev) => [...prev, {
-                      id: `tag_${Date.now()}`,
+                      id: newTagId,
                       name,
                       colorIndex,
                     }]);
@@ -3353,7 +3368,7 @@ export default function Meridian() {
                 <div style={{ display: "flex", gap: "8px" }}>
                   {/* Windows download */}
                   <a
-                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian-Setup.exe"
+                    href="https://github.com/aptorian/meridian/releases/latest"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -3376,9 +3391,10 @@ export default function Meridian() {
                   </a>
                   {/* macOS download */}
                   <a
-                    href="https://github.com/aptorian/meridian/releases/latest/download/Meridian.dmg"
+                    href="https://github.com/aptorian/meridian/releases/latest"
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={() => setShowMacHelp(true)}
                     style={{
                       flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
                       padding: "10px 12px", borderRadius: "8px", textDecoration: "none",
@@ -3398,9 +3414,33 @@ export default function Meridian() {
                     macOS
                   </a>
                 </div>
-                <div style={{ color: t.quoteMuted, fontSize: "10px", marginTop: "6px", opacity: 0.7 }}>
-                  macOS: right-click the app → Open on first launch
-                </div>
+                {showMacHelp && (
+                  <div style={{
+                    marginTop: "10px", padding: "12px", borderRadius: "8px",
+                    background: t.noteBg, border: `1px solid ${t.timelineBorder}`,
+                  }}>
+                    <div style={{ color: t.noteText, fontSize: "11px", fontWeight: 500, marginBottom: "8px" }}>
+                      First launch on macOS
+                    </div>
+                    <div style={{ color: t.quoteMuted, fontSize: "11px", lineHeight: "1.6" }}>
+                      1. Open the .dmg and drag Meridian to Applications<br />
+                      2. Right-click the app and select <b style={{ color: t.noteText }}>Open</b><br />
+                      3. Click <b style={{ color: t.noteText }}>Open</b> in the dialog that appears
+                    </div>
+                    <div style={{ color: t.quoteMuted, fontSize: "10px", marginTop: "8px", opacity: 0.7 }}>
+                      This is only needed once. macOS requires this for apps downloaded outside the App Store.
+                    </div>
+                    <div
+                      onClick={() => setShowMacHelp(false)}
+                      style={{
+                        color: t.quoteMuted, fontSize: "10px", marginTop: "8px",
+                        cursor: "pointer", textDecoration: "underline", opacity: 0.7,
+                      }}
+                    >
+                      Dismiss
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
