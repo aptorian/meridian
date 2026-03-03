@@ -2234,6 +2234,8 @@ export default function Meridian() {
             fontWeight: 300,
             letterSpacing: "0.5px",
             transition: "color 0.5s ease",
+            width: "200px",
+            textAlign: "center",
           }}>
             {formatDateStr(selectedDate)}
           </div>
