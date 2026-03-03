@@ -98,4 +98,8 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - `npm run build` — Production build (web only)
 - `npm run dev:electron` — Electron + Vite concurrently
 - `npm run build:electron` — Local Electron build (use CI instead for releases)
+
+### Windows-specific notes
 - PowerShell on Windows: use `;` not `&&` to chain commands
+- Bash tool can access paths via `cd "E:/Repos/meridian-clone"` with `export PATH="/c/Program Files/nodejs:$PATH"`
+- PowerShell via: `"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "cd E:\Repos\meridian-clone; ..."`
