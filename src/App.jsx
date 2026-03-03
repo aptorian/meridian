@@ -3423,8 +3423,9 @@ export default function Meridian() {
                     </div>
                     <div style={{ color: t.quoteMuted, fontSize: "11px", lineHeight: "1.6" }}>
                       1. Open the .dmg and drag Meridian to Applications<br />
-                      2. Right-click the app and select <b style={{ color: t.noteText }}>Open</b><br />
-                      3. Click <b style={{ color: t.noteText }}>Open</b> in the dialog that appears
+                      2. Try to open the app — macOS will block it<br />
+                      3. Go to <b style={{ color: t.noteText }}>System Settings → Privacy & Security</b><br />
+                      4. Scroll to the bottom and click <b style={{ color: t.noteText }}>Open Anyway</b>
                     </div>
                     <div style={{ color: t.quoteMuted, fontSize: "10px", marginTop: "8px", opacity: 0.7 }}>
                       This is only needed once. macOS requires this for apps downloaded outside the App Store.
@@ -3436,7 +3437,7 @@ export default function Meridian() {
                         rel="noopener noreferrer"
                         style={{
                           padding: "6px 14px", borderRadius: "6px", textDecoration: "none",
-                          background: t.noteText, color: t.noteBg, fontSize: "11px",
+                          background: t.noteText, color: t.bgLocked, fontSize: "11px",
                           fontFamily: "'DM Sans', sans-serif", fontWeight: 500,
                           transition: "opacity 0.2s",
                         }}

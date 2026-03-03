@@ -115,7 +115,7 @@ function createWindow() {
     height: saved?.height ?? defaults.height,
     x: saved?.x,
     y: saved?.y,
-    minWidth: 680,
+    minWidth: 220,
     minHeight: 160,
     frame: false,
     titleBarStyle: "hidden",
