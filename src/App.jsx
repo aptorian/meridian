@@ -1235,6 +1235,7 @@ export default function Meridian() {
   const slots = totalHours * (60 / SLOT_MINUTES);
   const [showSettings, setShowSettings] = useState(false);
   const [showMacHelp, setShowMacHelp] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const [isVertical, setIsVertical] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 700px)").matches
   );
@@ -1364,6 +1365,11 @@ export default function Meridian() {
           await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
         }
       });
+    }
+
+    // In Electron, listen for update notifications
+    if (isElectron && window.electronAPI.onUpdateAvailable) {
+      window.electronAPI.onUpdateAvailable((info) => setUpdateInfo(info));
     }
 
     return () => subscription.unsubscribe();
@@ -2440,6 +2446,34 @@ export default function Meridian() {
           )}
         </div>
       </div>
+
+      {/* Update banner (Electron only) */}
+      {updateInfo && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+          padding: "6px 16px", fontSize: "11px", fontFamily: "'DM Sans', sans-serif",
+          background: t.toggleHoverBg, color: t.noteText, flexShrink: 0,
+        }}>
+          <span>Meridian v{updateInfo.version} is available</span>
+          <a
+            href={updateInfo.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: t.noteText, fontWeight: 600, textDecoration: "underline",
+              cursor: "pointer",
+            }}
+          >
+            Download
+          </a>
+          <span
+            onClick={() => setUpdateInfo(null)}
+            style={{ cursor: "pointer", opacity: 0.5, marginLeft: "4px" }}
+          >
+            ✕
+          </span>
+        </div>
+      )}
 
       {/* Timeline area */}
       <div style={{

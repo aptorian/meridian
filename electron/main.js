@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, screen, shell, ipcMain } from "electron";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
+import https from "https";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,9 +164,10 @@ function createWindow() {
     shell.openExternal(url);
   });
 
-  // Show when ready to avoid flash
+  // Show when ready to avoid flash, then check for updates
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    if (!isDev) checkForUpdates();
   });
 
   // Save state on move/resize (debounced)
@@ -180,6 +182,44 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// --- Update check ---
+function checkForUpdates() {
+  const currentVersion = app.getVersion();
+  const req = https.get(
+    "https://api.github.com/repos/aptorian/meridian/releases/latest",
+    { headers: { "User-Agent": "Meridian-Electron" } },
+    (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          const release = JSON.parse(data);
+          const latest = (release.tag_name || "").replace(/^v/, "");
+          if (latest && latest !== currentVersion && isNewer(latest, currentVersion)) {
+            mainWindow?.webContents.send("update-available", {
+              version: latest,
+              url: release.html_url,
+            });
+          }
+        } catch {
+          // ignore parse errors
+        }
+      });
+    }
+  );
+  req.on("error", () => {}); // ignore network errors
+}
+
+function isNewer(latest, current) {
+  const a = latest.split(".").map(Number);
+  const b = current.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return false;
 }
 
 // --- IPC handlers for custom window controls (Windows) ---
