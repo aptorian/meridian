@@ -1077,7 +1077,7 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
   );
 }
 
-function NotepadArea({ theme: t, tags, activeColors, onCloudSave, notesVersion, isMuted, setIsMuted }) {
+function NotepadArea({ theme: t, tags, activeColors, blocks = [], onCloudSave, notesVersion, isMuted, setIsMuted }) {
   const [containerWidth, setContainerWidth] = useState(700);
   const containerRef = useRef(null);
 
@@ -1093,6 +1093,16 @@ function NotepadArea({ theme: t, tags, activeColors, onCloudSave, notesVersion, 
     if (tags.length === 0) return [{ key: "_general", name: "General", colorIndex: null }];
     return tags.map((tg) => ({ key: tg.id, name: tg.name, colorIndex: tg.colorIndex }));
   }, [tags]);
+
+  const tagStats = useMemo(() => {
+    const stats = {};
+    blocks.forEach(b => {
+      const key = b.tagId || "_untagged";
+      if (!stats[key]) stats[key] = 0;
+      stats[key] += (b.endSlot - b.startSlot) * SLOT_MINUTES / 60;
+    });
+    return stats;
+  }, [blocks]);
 
   if (columns.length === 1 && columns[0].key === "_general") {
     // No tags — just render a single notepad
@@ -1145,6 +1155,11 @@ function NotepadArea({ theme: t, tags, activeColors, onCloudSave, notesVersion, 
                   }} />
                 )}
                 {col.name}
+                {tagStats[col.key] > 0 && (
+                  <span style={{ opacity: 0.4, fontWeight: 300 }}>
+                    {tagStats[col.key].toFixed(1)}h
+                  </span>
+                )}
               </div>
               <NotepadColumn
                 theme={t}
@@ -1158,6 +1173,671 @@ function NotepadArea({ theme: t, tags, activeColors, onCloudSave, notesVersion, 
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Upcoming Days Drawer ───
+
+function UpcomingMiniBar({ blocks, totalSlots, activeColors, isInk, t }) {
+  return (
+    <div style={{
+      position: "relative", height: 20, borderRadius: 5,
+      background: t.isInk ? "rgba(0,0,0,0.04)" : "rgba(128,128,128,0.06)",
+      overflow: "hidden",
+      transition: "background 0.3s ease",
+    }}>
+      {blocks.map((b, i) => {
+        const left = (b.startSlot / totalSlots) * 100;
+        const width = ((b.endSlot - b.startSlot) / totalSlots) * 100;
+        const color = isInk
+          ? (parseInt(b.id, 10) % 2 === 0 ? (t.inkBlockA || "#e0e0e0") : (t.inkBlockB || "#d0d0d0"))
+          : (activeColors[b.colorIndex % activeColors.length]?.bg || "#888");
+        return (
+          <div key={b.id || i} style={{
+            position: "absolute",
+            left: `${left}%`, width: `${Math.max(width, 1)}%`,
+            top: 3, bottom: 3, borderRadius: 3,
+            background: color, opacity: 0.75,
+            transition: "background 0.3s ease",
+          }} />
+        );
+      })}
+    </div>
+  );
+}
+
+function UpcomingDayCard({ day, index, expanded, onToggle, hoursStart, hoursEnd, totalSlots, t, activeColors, isInk, isLocked, theme, tags,
+  editBlocks, editingBlockId, hoveredSlot, onTimelineClick, onTimelineMouseMove, onTimelineMouseLeave,
+  onStartResize, onStartReorder, onDeleteBlock, onSetEditingBlockId, onUpdateBlockTitle,
+  onSetTagPopoverBlockId, tagPopoverBlockId, onAssignTag, timelineRefCallback, inputRef, isDragging }) {
+  const { blocks: dayBlocks, label, detail, totalHours, dateStr } = day;
+  // Use editBlocks when expanded (live editing state), otherwise use day.blocks
+  const displayBlocks = expanded && editBlocks ? editBlocks : dayBlocks;
+  const blockCount = displayBlocks.length;
+  const displayHours = displayBlocks.reduce((s, b) => s + (b.endSlot - b.startSlot) * SLOT_MINUTES / 60, 0);
+  const isEmpty = blockCount === 0;
+  const isLight = !t.isInk && t.bgLocked === "#f0e8df";
+  const canEdit = expanded && !isLocked;
+
+  const dotColor = isEmpty ? (isLight ? "rgba(120,100,80,0.3)" : "rgba(255,255,255,0.2)")
+    : displayHours > 6 ? (activeColors[0]?.bg || "#8BA4B8")
+    : displayHours > 3 ? (activeColors[4]?.bg || "#7BACA8")
+    : (activeColors[3]?.bg || "#9DBF9E");
+
+  const cardBg = isLight ? "rgba(255,255,255,0.55)" : t.isInk ? "rgba(0,0,0,0.02)" : "rgba(255,255,255,0.04)";
+  const cardHoverBg = isLight ? "rgba(255,255,255,0.8)" : t.isInk ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.07)";
+  const cardBorder = isLight ? "rgba(120,100,80,0.07)" : t.isInk ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.05)";
+  const activeBorder = isLight ? "rgba(120,100,80,0.18)" : t.isInk ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.14)";
+  const activeShadow = isLight ? "0 4px 16px rgba(0,0,0,0.06)" : "0 4px 16px rgba(0,0,0,0.2)";
+  const faintText = isLight ? "rgba(120,100,80,0.3)" : t.isInk ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.2)";
+
+  const hours = [];
+  for (let h = hoursStart; h <= hoursEnd; h++) hours.push(h);
+
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onToggle(index); }}
+      onMouseEnter={(e) => { if (!expanded) { e.currentTarget.style.background = cardHoverBg; e.currentTarget.style.transform = "translateY(-1px)"; } }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = expanded ? cardHoverBg : cardBg; e.currentTarget.style.transform = "translateY(0)"; }}
+      style={{
+        background: expanded ? cardHoverBg : cardBg,
+        borderRadius: 12,
+        border: `1px solid ${expanded ? activeBorder : cardBorder}`,
+        padding: expanded ? "14px 16px 16px" : "11px 16px",
+        cursor: expanded ? "default" : "pointer",
+        transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        boxShadow: expanded ? activeShadow : "none",
+      }}
+    >
+      {/* Card header */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: expanded ? 10 : isEmpty ? 0 : 8,
+        cursor: "pointer",
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <div style={{
+            width: 5, height: 5, borderRadius: "50%",
+            background: dotColor, flexShrink: 0, marginTop: 1,
+            transition: "background 0.3s ease",
+          }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: t.noteText || t.inputText, transition: "color 0.3s ease" }}>
+            {label}
+          </span>
+          <span style={{ fontSize: 11, color: faintText }}>{detail}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: faintText, fontStyle: isEmpty ? "italic" : "normal" }}>
+            {isEmpty ? "No blocks yet" : `${blockCount} block${blockCount !== 1 ? "s" : ""} · ${displayHours.toFixed(1)}h`}
+          </span>
+          <div style={{
+            transition: "transform 0.25s ease",
+            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            color: faintText, fontSize: 10,
+          }}>›</div>
+        </div>
+      </div>
+
+      {/* Mini timeline bar (collapsed) */}
+      {!expanded && !isEmpty && (
+        <UpcomingMiniBar blocks={displayBlocks} totalSlots={totalSlots} activeColors={activeColors} isInk={isInk} t={t} />
+      )}
+
+      {/* Expanded: interactive timeline */}
+      {expanded && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ animation: "drawerCardSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1)" }}
+        >
+          {/* Hour labels */}
+          <div style={{ position: "relative", height: 15, marginBottom: 3 }}>
+            {hours.map(h => (
+              <div key={h} style={{
+                position: "absolute",
+                left: `${((h - hoursStart) / (hoursEnd - hoursStart)) * 100}%`,
+                transform: "translateX(-50%)",
+                fontSize: 9, color: t.hourLabel, whiteSpace: "nowrap",
+                transition: "color 0.3s ease",
+              }}>
+                {formatTime(h * 60)}
+              </div>
+            ))}
+          </div>
+
+          {/* Interactive timeline bar */}
+          <div
+            data-drawer-timeline="true"
+            ref={timelineRefCallback}
+            onClick={canEdit ? onTimelineClick : undefined}
+            onMouseMove={canEdit ? onTimelineMouseMove : undefined}
+            onMouseLeave={canEdit ? (onTimelineMouseLeave || (() => {})) : undefined}
+            style={{
+              position: "relative", height: 80,
+              borderRadius: isLocked ? 12 : 9,
+              background: isLocked ? "transparent" : t.timelineBg,
+              border: isLocked ? "none" : t.timelineBorder,
+              cursor: canEdit ? "pointer" : "default",
+              transition: "all 0.5s ease",
+            }}
+          >
+            {/* Grid lines */}
+            {canEdit && hours.filter(h => h > hoursStart && h < hoursEnd).map(h => (
+              <div key={h} style={{
+                position: "absolute",
+                left: `${((h - hoursStart) / (hoursEnd - hoursStart)) * 100}%`,
+                top: 0, bottom: 0, width: 1, background: t.gridLineBg,
+              }} />
+            ))}
+
+            {/* Hover "+" indicator */}
+            {canEdit && hoveredSlot != null && (
+              <div style={{
+                position: "absolute",
+                left: `${(hoveredSlot / totalSlots) * 100}%`,
+                top: 0, bottom: 0,
+                width: `${(1 / totalSlots) * 100}%`,
+                background: isLight ? "rgba(120,100,80,0.06)" : t.isInk ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.04)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                pointerEvents: "none",
+              }}>
+                <span style={{
+                  fontSize: 14, fontWeight: 300, opacity: 0.4,
+                  color: isLight ? "rgba(120,100,80,0.6)" : t.isInk ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)",
+                }}>+</span>
+              </div>
+            )}
+
+            {/* Blocks */}
+            {displayBlocks.map((b) => {
+              const left = (b.startSlot / totalSlots) * 100;
+              const width = ((b.endSlot - b.startSlot) / totalSlots) * 100;
+              const color = isInk
+                ? (parseInt(b.id, 10) % 2 === 0 ? (t.inkBlockA || "#e0e0e0") : (t.inkBlockB || "#d0d0d0"))
+                : (activeColors[b.colorIndex % activeColors.length]?.bg || "#888");
+              const blockTag = b.tagId ? tags.find(tg => tg.id === b.tagId) : null;
+              const isEditing = editingBlockId === b.id;
+
+              return (
+                <div
+                  key={b.id}
+                  data-drawer-block="true"
+                  onMouseDown={(e) => {
+                    if (!canEdit || e.target.closest("[data-resize]") || e.target.closest("input")) return;
+                    e.stopPropagation();
+                    onStartReorder(e, b.id);
+                  }}
+                  onDoubleClick={(e) => {
+                    if (!canEdit) return;
+                    e.stopPropagation();
+                    onSetEditingBlockId(b.id);
+                  }}
+                  onMouseEnter={canEdit ? (e) => {
+                    const el = e.currentTarget;
+                    el.querySelectorAll("[data-hover-show]").forEach(c => { c.style.opacity = "1"; });
+                  } : undefined}
+                  onMouseLeave={canEdit ? (e) => {
+                    const el = e.currentTarget;
+                    el.querySelectorAll("[data-hover-show]").forEach(c => {
+                      if (c.dataset.keepVisible !== "true") c.style.opacity = "0";
+                    });
+                  } : undefined}
+                  style={{
+                    position: "absolute",
+                    left: `${left}%`, width: `${width}%`,
+                    top: 5, bottom: 5, borderRadius: 7,
+                    background: color, opacity: isEditing ? 1 : 0.85,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    padding: "0 4px",
+                    overflow: "hidden",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+                    cursor: canEdit ? "grab" : "default",
+                    zIndex: isEditing ? 10 : 1,
+                    transition: isDragging ? "none" : "background 0.3s ease",
+                  }}
+                >
+                  {/* Left resize handle */}
+                  {canEdit && !isEditing && (
+                    <div
+                      data-resize="left"
+                      onMouseDown={(e) => { e.stopPropagation(); onStartResize(e, b.id, "left"); }}
+                      style={{
+                        position: "absolute", left: 0, top: 0, bottom: 0, width: 8,
+                        cursor: "ew-resize", zIndex: 6, background: "transparent",
+                      }}
+                    >
+                      <div style={{
+                        position: "absolute", left: "2px", top: "50%", transform: "translateY(-50%)",
+                        width: "3px", height: "20px", borderRadius: "2px", background: t.handleColor,
+                      }} />
+                    </div>
+                  )}
+                  {/* Right resize handle */}
+                  {canEdit && !isEditing && (
+                    <div
+                      data-resize="right"
+                      onMouseDown={(e) => { e.stopPropagation(); onStartResize(e, b.id, "right"); }}
+                      style={{
+                        position: "absolute", right: 0, top: 0, bottom: 0, width: 8,
+                        cursor: "ew-resize", zIndex: 6, background: "transparent",
+                      }}
+                    >
+                      <div style={{
+                        position: "absolute", right: "2px", top: "50%", transform: "translateY(-50%)",
+                        width: "3px", height: "20px", borderRadius: "2px", background: t.handleColor,
+                      }} />
+                    </div>
+                  )}
+                  {/* Delete button */}
+                  {canEdit && !isEditing && (
+                    <div
+                      data-hover-show="true"
+                      onClick={(e) => { e.stopPropagation(); onDeleteBlock(b.id); }}
+                      style={{
+                        position: "absolute", top: 2, right: 2,
+                        width: 12, height: 12, borderRadius: "50%",
+                        background: isLight ? "rgba(120,100,80,0.5)" : "rgba(255,255,255,0.3)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", fontSize: 7, color: isLight ? "#fff" : "#000",
+                        zIndex: 3, opacity: 0,
+                        transition: "opacity 0.15s ease",
+                      }}
+                    >×</div>
+                  )}
+                  {/* Tag dot */}
+                  {canEdit && tags && tags.length > 0 && (
+                    <div
+                      data-hover-show={isEditing ? undefined : "true"}
+                      data-keep-visible={tagPopoverBlockId === b.id ? "true" : "false"}
+                      className="tag-dot-trigger"
+                      onClick={(e) => { e.stopPropagation(); onSetTagPopoverBlockId(tagPopoverBlockId === b.id ? null : b.id); }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      style={{
+                        position: "absolute", bottom: 2, right: 2,
+                        width: 12, height: 12, borderRadius: "50%",
+                        background: b.tagId
+                          ? (isLight ? (activeColors[b.colorIndex % activeColors.length]?.lightBg || activeColors[b.colorIndex % activeColors.length]?.bg) : activeColors[b.colorIndex % activeColors.length]?.bg)
+                          : (isLight ? "rgba(120,100,80,0.3)" : t.isInk ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.2)"),
+                        border: tagPopoverBlockId === b.id ? `2px solid ${t.blockLabelText || faintText}` : `1.5px solid ${isLight ? "rgba(120,100,80,0.2)" : t.isInk ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.1)"}`,
+                        cursor: "pointer",
+                        opacity: isEditing || tagPopoverBlockId === b.id ? 1 : 0,
+                        transition: "opacity 0.15s ease",
+                        zIndex: 7,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: "8px", color: t.blockLabelText || faintText, lineHeight: 1,
+                      }}
+                    >#</div>
+                  )}
+
+                  {/* Block content / inline edit */}
+                  {isEditing ? (
+                    <input
+                      ref={inputRef}
+                      value={b.title}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => onUpdateBlockTitle(b.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") onSetEditingBlockId(null);
+                        if (e.key === "Escape") {
+                          if (b.title === "New Block" || b.title === "") onDeleteBlock(b.id);
+                          else onSetEditingBlockId(null);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("[data-drawer-block]")) return;
+                        if (b.title === "New Block" || b.title === "") onDeleteBlock(b.id);
+                        else onSetEditingBlockId(null);
+                      }}
+                      style={{
+                        background: "transparent", border: "none", outline: "none",
+                        textAlign: "center", fontSize: width < 6 ? 8 : 10.5, fontWeight: 500,
+                        color: t.blockLabelText, width: "100%",
+                        padding: "0 2px",
+                        caretColor: t.caretColor || t.blockLabelText,
+                      }}
+                    />
+                  ) : (
+                    <div style={{
+                      display: "flex", flexDirection: "column", alignItems: "center",
+                      gap: "1px", pointerEvents: "none", overflow: "hidden",
+                      maxWidth: "100%",
+                    }}>
+                      <span style={{
+                        fontSize: width < 6 ? 8 : 10.5, fontWeight: 500,
+                        color: t.blockLabelText,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                        maxWidth: "100%",
+                      }}>
+                        {b.title || "Untitled"}
+                      </span>
+                      {blockTag && width >= 8 && (
+                        <span style={{
+                          fontSize: "8px",
+                          fontFamily: "'DM Sans', sans-serif",
+                          color: t.timeRangeText,
+                          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          maxWidth: "100%",
+                        }}>
+                          {blockTag.name}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {/* Time range */}
+                  {canEdit && width >= 5 && !isEditing && (
+                    <div style={{
+                      position: "absolute", bottom: "2px",
+                      left: "50%", transform: "translateX(-50%)",
+                      fontSize: "7.5px",
+                      fontFamily: "'DM Sans', sans-serif",
+                      color: t.timeRangeText,
+                      whiteSpace: "nowrap",
+                      opacity: 0.7,
+                      pointerEvents: "none",
+                    }}>
+                      {formatTime(slotToMinutes(b.startSlot, hoursStart))} – {formatTime(slotToMinutes(b.endSlot, hoursStart))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Tag popover */}
+            {tagPopoverBlockId && tags && tags.length > 0 && canEdit && (() => {
+              const popBlock = displayBlocks.find(b => b.id === tagPopoverBlockId);
+              if (!popBlock) return null;
+              const popLeft = (popBlock.startSlot / totalSlots) * 100;
+              const popWidth = ((popBlock.endSlot - popBlock.startSlot) / totalSlots) * 100;
+              return (
+                <div
+                  data-tag-popover="true"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    position: "absolute",
+                    left: `calc(${popLeft + popWidth}% + 4px)`,
+                    top: "4px",
+                    minWidth: "120px",
+                    background: isLight ? "rgba(240,232,223,0.97)" : t.isInk ? "rgba(245,243,240,0.97)" : "rgba(30,30,34,0.97)",
+                    backdropFilter: "blur(12px)",
+                    borderRadius: "8px",
+                    boxShadow: isLight ? "0 4px 16px rgba(0,0,0,0.12)" : "0 4px 16px rgba(0,0,0,0.4)",
+                    padding: "6px",
+                    zIndex: 25,
+                    display: "flex", flexDirection: "column", gap: "2px",
+                  }}
+                >
+                  {tags.map(tg => {
+                    const tagColor = activeColors[tg.colorIndex % activeColors.length];
+                    const isSelected = popBlock.tagId === tg.id;
+                    const dotColor = isLight ? tagColor.lightBg : tagColor.bg;
+                    return (
+                      <div
+                        key={tg.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAssignTag(tagPopoverBlockId, tg.id, tg.colorIndex);
+                        }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: "8px",
+                          padding: "5px 10px", borderRadius: "6px", cursor: "pointer",
+                          background: "transparent", transition: "background 0.1s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)";
+                          const dot = e.currentTarget.querySelector("[data-tag-dot]");
+                          if (dot && !isSelected) dot.style.background = `${dotColor}60`;
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                          const dot = e.currentTarget.querySelector("[data-tag-dot]");
+                          if (dot && !isSelected) dot.style.background = "transparent";
+                        }}
+                      >
+                        <div data-tag-dot="true" style={{
+                          width: "10px", height: "10px", borderRadius: "50%",
+                          border: `1.5px solid ${dotColor}`,
+                          background: isSelected ? dotColor : "transparent",
+                          flexShrink: 0, transition: "background 0.1s ease",
+                        }} />
+                        <span style={{
+                          fontSize: "11px", fontFamily: "'DM Sans', sans-serif",
+                          color: t.blockLabelText || faintText, whiteSpace: "nowrap",
+                        }}>{tg.name}</span>
+                      </div>
+                    );
+                  })}
+                  {popBlock.tagId && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAssignTag(tagPopoverBlockId, null, null);
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: "8px",
+                        padding: "5px 10px", borderRadius: "6px", cursor: "pointer",
+                        borderTop: `1px solid ${isLight ? "rgba(120,100,80,0.15)" : t.isInk ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.08)"}`,
+                        marginTop: "2px", paddingTop: "7px",
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.background = isLight ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)"}
+                      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                    >
+                      <span style={{
+                        fontSize: "11px", fontFamily: "'DM Sans', sans-serif",
+                        color: faintText, whiteSpace: "nowrap",
+                      }}>Remove tag</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Empty state hint */}
+            {isEmpty && canEdit && (
+              <div style={{
+                position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                pointerEvents: "none",
+              }}>
+                <span style={{ fontSize: 11, color: faintText, opacity: 0.6 }}>
+                  click to add a block
+                </span>
+              </div>
+            )}
+            {isEmpty && isLocked && (
+              <div style={{
+                position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                pointerEvents: "none",
+              }}>
+                <span style={{ fontSize: 11, color: faintText, opacity: 0.4 }}>
+                  No blocks planned
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Block list summary */}
+          {displayBlocks.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              {displayBlocks.map((b, bi) => {
+                const color = isInk
+                  ? (parseInt(b.id, 10) % 2 === 0 ? (t.inkBlockA || "#e0e0e0") : (t.inkBlockB || "#d0d0d0"))
+                  : (activeColors[b.colorIndex % activeColors.length]?.bg || "#888");
+                const startMin = slotToMinutes(b.startSlot, hoursStart);
+                const endMin = slotToMinutes(b.endSlot, hoursStart);
+                return (
+                  <div key={b.id || bi} style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "6px 2px",
+                    borderBottom: bi < displayBlocks.length - 1 ? `1px solid ${cardBorder}` : "none",
+                  }}>
+                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                    <span style={{ fontSize: 11.5, color: t.noteText || t.inputText, flex: 1, fontWeight: 450 }}>
+                      {b.title || "Untitled"}
+                    </span>
+                    <span style={{ fontSize: 10, color: faintText, fontVariantNumeric: "tabular-nums" }}>
+                      {formatTime(startMin)} – {formatTime(endMin)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UpcomingDrawer({ open, onToggle, dragDelta, onDragStart, days, expandedIndex, onExpandToggle,
+  hoursStart, hoursEnd, totalSlots, t, activeColors, isInk, isLocked, mouseMoving, onNavigateDate, bodyRef,
+  theme, tags, editBlocks, editingBlockId, hoveredSlot,
+  onTimelineClick, onTimelineMouseMove, onTimelineMouseLeave,
+  onStartResize, onStartReorder, onDeleteBlock, onSetEditingBlockId, onUpdateBlockTitle,
+  onSetTagPopoverBlockId, tagPopoverBlockId, onAssignTag, timelineRefCallback, inputRef, isDragging }) {
+
+  const isLight = !t.isInk && t.bgLocked === "#f0e8df";
+  const handleHeight = 46;
+  const bodyHeight = 400;
+  const totalBlockCount = days.reduce((s, d) => s + d.blocks.length, 0);
+  const totalPlannedHours = days.reduce((s, d) => s + d.totalHours, 0);
+  const plannedDays = days.filter(d => d.blocks.length > 0).length;
+
+  const drawerBg = isLight ? "rgba(237,231,220,0.88)" : t.isInk ? "rgba(250,250,250,0.88)" : "rgba(30,30,36,0.88)";
+  const handleBg = isLight ? "rgba(180,165,140,0.12)" : t.isInk ? "rgba(0,0,0,0.03)" : "rgba(255,255,255,0.04)";
+  const handleBorder = isLight ? "rgba(180,165,140,0.22)" : t.isInk ? "rgba(0,0,0,0.1)" : "rgba(255,255,255,0.08)";
+  const pillColor = isLight ? "rgba(150,130,105,0.25)" : t.isInk ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.15)";
+  const labelColor = isLight ? "rgba(120,100,80,0.5)" : t.isInk ? "rgba(0,0,0,0.4)" : "rgba(255,255,255,0.4)";
+  const faintColor = isLight ? "rgba(120,100,80,0.3)" : t.isInk ? "rgba(0,0,0,0.3)" : "rgba(255,255,255,0.2)";
+  const cardBorderColor = isLight ? "rgba(120,100,80,0.07)" : t.isInk ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.05)";
+  const badgeBg = activeColors[4]?.bg || "#7BACA8";
+
+  return (
+    <div style={{
+      position: "absolute",
+      bottom: 0, left: 0, right: 0,
+      height: bodyHeight + handleHeight,
+      transform: open
+        ? `translateY(${Math.max(0, dragDelta)}px)`
+        : `translateY(${bodyHeight}px)`,
+      transition: dragDelta !== 0 ? "none" : "transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)",
+      zIndex: 20,
+    }}>
+      {/* Handle */}
+      <div
+        onMouseDown={onDragStart}
+        onTouchStart={onDragStart}
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        style={{
+          background: handleBg,
+          backdropFilter: "blur(24px)",
+          WebkitBackdropFilter: "blur(24px)",
+          borderTop: `1px solid ${handleBorder}`,
+          borderRadius: "14px 14px 0 0",
+          padding: "8px 28px 6px",
+          cursor: "ns-resize",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          userSelect: "none",
+          height: handleHeight,
+          opacity: isLocked ? (mouseMoving ? 0.6 : 0.15) : 1,
+          transition: "background 0.3s ease, border-color 0.3s ease, opacity 0.6s ease",
+        }}
+      >
+        {/* Left: pill */}
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-start" }}>
+          <div style={{ width: 28, height: 3.5, borderRadius: 2, background: pillColor }} />
+        </div>
+        {/* Center: label + badge */}
+        <div style={{
+          fontSize: 11.5, color: labelColor, fontWeight: 500,
+          letterSpacing: 0.8, textTransform: "uppercase",
+          display: "flex", alignItems: "center", gap: 8,
+        }}>
+          {!open && totalBlockCount > 0 && (
+            <span style={{
+              background: badgeBg, color: "rgba(255,255,255,0.9)",
+              fontSize: 9, fontWeight: 600, padding: "1px 6px",
+              borderRadius: 8, letterSpacing: 0, textTransform: "none",
+            }}>
+              {totalBlockCount} block{totalBlockCount !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+        {/* Right: chevron */}
+        <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+          <div style={{
+            transition: "transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
+            transform: open ? "rotate(180deg)" : "rotate(0deg)",
+            color: faintColor, fontSize: 11,
+          }}>▲</div>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div
+        ref={bodyRef}
+        style={{
+          background: drawerBg,
+          backdropFilter: "blur(24px)",
+          WebkitBackdropFilter: "blur(24px)",
+          height: bodyHeight,
+          overflowY: "auto",
+          overflowX: "hidden",
+          padding: "6px 24px 28px",
+          transition: "background 0.3s ease",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {days.map((day, i) => (
+            <UpcomingDayCard
+              key={day.dateStr}
+              day={day}
+              index={i}
+              expanded={expandedIndex === i}
+              onToggle={onExpandToggle}
+              hoursStart={hoursStart}
+              hoursEnd={hoursEnd}
+              totalSlots={totalSlots}
+              t={t}
+              activeColors={activeColors}
+              isInk={isInk}
+              isLocked={isLocked}
+              theme={theme}
+              tags={tags}
+              editBlocks={expandedIndex === i ? editBlocks : null}
+              editingBlockId={expandedIndex === i ? editingBlockId : null}
+              hoveredSlot={expandedIndex === i ? hoveredSlot : null}
+              onTimelineClick={expandedIndex === i ? onTimelineClick : undefined}
+              onTimelineMouseMove={expandedIndex === i ? onTimelineMouseMove : undefined}
+              onTimelineMouseLeave={expandedIndex === i ? onTimelineMouseLeave : undefined}
+              onStartResize={expandedIndex === i ? onStartResize : undefined}
+              onStartReorder={expandedIndex === i ? onStartReorder : undefined}
+              onDeleteBlock={expandedIndex === i ? onDeleteBlock : undefined}
+              onSetEditingBlockId={expandedIndex === i ? onSetEditingBlockId : undefined}
+              onUpdateBlockTitle={expandedIndex === i ? onUpdateBlockTitle : undefined}
+              onSetTagPopoverBlockId={expandedIndex === i ? onSetTagPopoverBlockId : undefined}
+              tagPopoverBlockId={expandedIndex === i ? tagPopoverBlockId : null}
+              onAssignTag={expandedIndex === i ? onAssignTag : undefined}
+              timelineRefCallback={expandedIndex === i ? timelineRefCallback : undefined}
+              inputRef={expandedIndex === i ? inputRef : undefined}
+              isDragging={expandedIndex === i ? isDragging : false}
+            />
+          ))}
+        </div>
+        {/* Bottom summary */}
+        <div style={{
+          marginTop: 16, textAlign: "center",
+          padding: "10px 0",
+          borderTop: `1px solid ${cardBorderColor}`,
+          transition: "border-color 0.3s ease",
+        }}>
+          <span style={{ fontSize: 10, color: faintColor, letterSpacing: 0.3, transition: "color 0.3s ease" }}>
+            {plannedDays} of {days.length} days planned · {totalPlannedHours.toFixed(0)}h total
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -1239,6 +1919,22 @@ export default function Meridian() {
   const slots = totalHours * (60 / SLOT_MINUTES);
   const [showSettings, setShowSettings] = useState(false);
   const [showMacHelp, setShowMacHelp] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [expandedDayIndex, setExpandedDayIndex] = useState(null);
+  const [drawerDragStartY, setDrawerDragStartY] = useState(null);
+  const [drawerDragDelta, setDrawerDragDelta] = useState(0);
+  const drawerBodyRef = useRef(null);
+  // Drawer inline editing state
+  const [drawerEditBlocks, setDrawerEditBlocks] = useState([]);
+  const [drawerEditDate, setDrawerEditDate] = useState(null);
+  const [drawerEditingBlockId, setDrawerEditingBlockId] = useState(null);
+  const [drawerResizeState, setDrawerResizeState] = useState(null);
+  const [drawerReorderState, setDrawerReorderState] = useState(null);
+  const [drawerHoveredSlot, setDrawerHoveredSlot] = useState(null);
+  const [drawerTagPopoverBlockId, setDrawerTagPopoverBlockId] = useState(null);
+  const drawerTimelineRef = useRef(null);
+  const drawerInputRef = useRef(null);
+  const drawerNextIdRef = useRef(1000000);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [isVertical, setIsVertical] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(max-width: 700px)").matches
@@ -1898,6 +2594,72 @@ export default function Meridian() {
     return { top: `${offset}%`, height: `${pct}%`, bottom: "auto" };
   }
 
+  // Upcoming days data for drawer
+  const UPCOMING_DAYS_COUNT = 5;
+  const upcomingDaysData = useMemo(() => {
+    if (!drawerOpen) return [];
+    const today = todayStr();
+    try {
+      const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      if (typeof all !== "object" || Array.isArray(all)) return [];
+      return Array.from({ length: UPCOMING_DAYS_COUNT }, (_, i) => {
+        const dateStr = addDays(today, i + 1);
+        const parts = dateStr.split("-").map(Number);
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        const dayBlocks = Array.isArray(all[dateStr]) ? all[dateStr] : [];
+        const totalHrs = dayBlocks.reduce((s, b) => s + (b.endSlot - b.startSlot) * SLOT_MINUTES / 60, 0);
+        return {
+          dateStr,
+          label: i === 0 ? "Tomorrow" : d.toLocaleDateString("en-US", { weekday: "long" }),
+          detail: d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }),
+          blocks: dayBlocks,
+          totalHours: totalHrs,
+        };
+      });
+    } catch { return []; }
+  }, [drawerOpen, blocks, selectedDate, drawerEditBlocks]);
+
+  // Load blocks into drawer edit state when a card is expanded
+  useEffect(() => {
+    if (expandedDayIndex == null) {
+      setDrawerEditDate(null);
+      setDrawerEditBlocks([]);
+      setDrawerEditingBlockId(null);
+      setDrawerResizeState(null);
+      setDrawerReorderState(null);
+      setDrawerHoveredSlot(null);
+      setDrawerTagPopoverBlockId(null);
+      return;
+    }
+    // Compute dateStr directly to avoid circular dependency with upcomingDaysData
+    const dateStr = addDays(todayStr(), expandedDayIndex + 1);
+    setDrawerEditDate(dateStr);
+    try {
+      const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      const dayBlocks = Array.isArray(all[dateStr]) ? all[dateStr] : [];
+      setDrawerEditBlocks(dayBlocks);
+      const maxId = dayBlocks.reduce((m, b) => {
+        const num = parseInt(b.id, 10);
+        return isNaN(num) ? m : Math.max(m, num);
+      }, 0);
+      drawerNextIdRef.current = Math.max(drawerNextIdRef.current, maxId + 1);
+    } catch {
+      setDrawerEditBlocks([]);
+    }
+  }, [expandedDayIndex]);
+
+  // Save drawer edits to localStorage and trigger cloud sync
+  useEffect(() => {
+    if (!drawerEditDate) return;
+    try {
+      const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      const store = (typeof all === "object" && !Array.isArray(all)) ? all : {};
+      store[drawerEditDate] = drawerEditBlocks;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    } catch {}
+    saveToCloud();
+  }, [drawerEditBlocks, drawerEditDate, saveToCloud]);
+
   // Persist blocks to localStorage (date-keyed)
   useEffect(() => {
     try {
@@ -2005,6 +2767,18 @@ export default function Meridian() {
     };
   }, []);
 
+  // Escape key closes drawer
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (e.key === "Escape" && drawerOpen) {
+        setDrawerOpen(false);
+        setExpandedDayIndex(null);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [drawerOpen]);
+
   // Long press for padlock toggle
   const startLongPress = useCallback(() => {
     let start = performance.now();
@@ -2032,12 +2806,184 @@ export default function Meridian() {
     setLongPressProgress(0);
   }, []);
 
+  // Drawer drag handler
+  const handleDrawerDragStart = useCallback((e) => {
+    if (e.button && e.button !== 0) return; // only left click
+    e.preventDefault();
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    setDrawerDragStartY(clientY);
+    const handleMove = (ev) => {
+      const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+      setDrawerDragDelta(y - clientY);
+    };
+    const handleEnd = (ev) => {
+      const endY = ev.changedTouches ? ev.changedTouches[0].clientY : ev.clientY;
+      const delta = endY - clientY;
+      if (drawerOpen && delta > 40) { setDrawerOpen(false); setExpandedDayIndex(null); }
+      else if (!drawerOpen && delta < -40) setDrawerOpen(true);
+      setDrawerDragStartY(null);
+      setDrawerDragDelta(0);
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleEnd);
+      document.removeEventListener("touchmove", handleMove);
+      document.removeEventListener("touchend", handleEnd);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleEnd);
+    document.addEventListener("touchmove", handleMove);
+    document.addEventListener("touchend", handleEnd);
+  }, [drawerOpen]);
+
+  // ─── Drawer inline editing handlers ───
+  function getDrawerSlotFromX(clientX) {
+    if (!drawerTimelineRef.current) return 0;
+    const rect = drawerTimelineRef.current.getBoundingClientRect();
+    return Math.max(0, Math.min(slots - 1, Math.round(((clientX - rect.left) / rect.width) * slots)));
+  }
+
+  function handleDrawerTimelineClick(e) {
+    if (isLocked || drawerResizeState || drawerReorderState) return;
+    if (Date.now() - lastDragEndRef.current < 200) return;
+    if (e.target.closest("[data-drawer-block]")) return;
+    const slot = Math.min(getDrawerSlotFromX(e.clientX), slots - 1);
+    const empty = findEmptySlot(drawerEditBlocks, slot, slots);
+    if (!empty) return;
+    const id = String(drawerNextIdRef.current++);
+    const defaultTagId = lastUsedTagRef.current && tags.find(tg => tg.id === lastUsedTagRef.current)
+      ? lastUsedTagRef.current : (tags.length > 0 ? tags[0].id : null);
+    const tagColor = defaultTagId ? tags.find(tg => tg.id === defaultTagId)?.colorIndex : undefined;
+    const newBlock = {
+      id,
+      title: "New Block",
+      startSlot: empty.start,
+      endSlot: empty.end,
+      colorIndex: tagColor != null ? tagColor : getNextColor(drawerEditBlocks),
+      tagId: defaultTagId,
+      googleEventId: null,
+    };
+    setDrawerEditBlocks(prev => [...prev, newBlock]);
+    setDrawerEditingBlockId(id);
+  }
+
+  function handleDrawerTimelineMouseMove(e) {
+    if (isLocked || drawerResizeState || drawerReorderState) return;
+    if (e.target.closest("[data-drawer-block]")) { setDrawerHoveredSlot(null); return; }
+    const slot = Math.min(getDrawerSlotFromX(e.clientX), slots - 1);
+    const occupied = new Set();
+    drawerEditBlocks.forEach(b => { for (let s = b.startSlot; s < b.endSlot; s++) occupied.add(s); });
+    if (occupied.has(slot)) { setDrawerHoveredSlot(null); return; }
+    setDrawerHoveredSlot(slot);
+  }
+
+  function startDrawerResize(e, blockId, edge) {
+    e.stopPropagation();
+    e.preventDefault();
+    const slot = getDrawerSlotFromX(e.clientX);
+    const block = drawerEditBlocks.find(b => b.id === blockId);
+    if (!block) return;
+    const offset = edge === "right" ? slot - (block.endSlot - 1) : slot - block.startSlot;
+    setDrawerResizeState({ blockId, edge, offset });
+  }
+
+  useEffect(() => {
+    if (!drawerResizeState) return;
+    function onMove(e) {
+      const slot = getDrawerSlotFromX(e.clientX);
+      const adjusted = slot - (drawerResizeState.offset || 0);
+      setDrawerEditBlocks(prev => prev.map(b => {
+        if (b.id !== drawerResizeState.blockId) return b;
+        if (drawerResizeState.edge === "left") {
+          const newStart = Math.min(adjusted, b.endSlot - 1);
+          if (newStart >= 0 && !blocksOverlap(prev, newStart, b.endSlot, b.id))
+            return { ...b, startSlot: newStart };
+        } else {
+          const newEnd = Math.max(adjusted + 1, b.startSlot + 1);
+          if (newEnd <= slots && !blocksOverlap(prev, b.startSlot, newEnd, b.id))
+            return { ...b, endSlot: newEnd };
+        }
+        return b;
+      }));
+    }
+    function onUp() { lastDragEndRef.current = Date.now(); setDrawerResizeState(null); }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [drawerResizeState, slots]);
+
+  function startDrawerReorder(e, blockId) {
+    if (isLocked) return;
+    e.preventDefault();
+    const block = drawerEditBlocks.find(b => b.id === blockId);
+    if (!block) return;
+    const slot = getDrawerSlotFromX(e.clientX);
+    setDrawerReorderState({ blockId, offsetSlots: slot - block.startSlot, currentStart: block.startSlot });
+  }
+
+  useEffect(() => {
+    if (!drawerReorderState) return;
+    function onMove(e) {
+      const slot = getDrawerSlotFromX(e.clientX);
+      setDrawerEditBlocks(prev => {
+        const block = prev.find(b => b.id === drawerReorderState.blockId);
+        if (!block) return prev;
+        const width = block.endSlot - block.startSlot;
+        let newStart = slot - drawerReorderState.offsetSlots;
+        newStart = Math.max(0, Math.min(slots - width, newStart));
+        if (blocksOverlap(prev, newStart, newStart + width, block.id)) return prev;
+        setDrawerReorderState(rs => ({ ...rs, currentStart: newStart }));
+        return prev.map(b => b.id === drawerReorderState.blockId ? { ...b, startSlot: newStart, endSlot: newStart + width } : b);
+      });
+    }
+    function onUp() { lastDragEndRef.current = Date.now(); setDrawerReorderState(null); }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [drawerReorderState, slots]);
+
+  function deleteDrawerBlock(id) {
+    setDrawerEditBlocks(prev => prev.filter(b => b.id !== id));
+    if (drawerEditingBlockId === id) setDrawerEditingBlockId(null);
+    if (drawerTagPopoverBlockId === id) setDrawerTagPopoverBlockId(null);
+  }
+
+  function updateDrawerBlockTitle(id, title) {
+    setDrawerEditBlocks(prev => prev.map(b => b.id === id ? { ...b, title } : b));
+  }
+
+  function assignDrawerBlockTag(blockId, tagId, colorIndex) {
+    setDrawerEditBlocks(prev => prev.map(b => b.id === blockId
+      ? { ...b, tagId: tagId, colorIndex: colorIndex != null ? colorIndex : b.colorIndex }
+      : b
+    ));
+    setDrawerTagPopoverBlockId(null);
+  }
+
+  // Close drawer tag popover on click outside
+  useEffect(() => {
+    if (!drawerTagPopoverBlockId) return;
+    function onDown(e) {
+      if (e.target.closest && e.target.closest("[data-tag-popover]")) return;
+      if (e.target.closest && e.target.closest(".tag-dot-trigger")) return;
+      setDrawerTagPopoverBlockId(null);
+    }
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [drawerTagPopoverBlockId]);
+
+  // Auto-focus drawer block title input
+  useEffect(() => {
+    if (drawerEditingBlockId && drawerInputRef.current) {
+      drawerInputRef.current.focus();
+      drawerInputRef.current.select();
+    }
+  }, [drawerEditingBlockId]);
+
   function getSlotFromX(clientX) {
     if (!timelineRef.current) return 0;
     const rect = timelineRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const pct = x / rect.width;
-    return Math.max(0, Math.min(slots, Math.round(pct * slots)));
+    return Math.max(0, Math.min(slots - 1, Math.round(pct * slots)));
   }
 
   function getSlotFromY(clientY) {
@@ -2045,7 +2991,7 @@ export default function Meridian() {
     const rect = timelineRef.current.getBoundingClientRect();
     const y = clientY - rect.top;
     const pct = y / rect.height;
-    return Math.max(0, Math.min(slots, Math.round(pct * slots)));
+    return Math.max(0, Math.min(slots - 1, Math.round(pct * slots)));
   }
 
   function getSlotFromPointer(e) {
@@ -2218,6 +3164,7 @@ export default function Meridian() {
     <div style={{
       width: "100vw",
       height: "100vh",
+      position: "relative",
       background: isLocked ? t.bgLocked : t.bgEdit,
       display: "flex",
       flexDirection: "column",
@@ -2264,10 +3211,20 @@ export default function Meridian() {
             fontWeight: 300,
             letterSpacing: "0.5px",
             transition: "color 0.5s ease",
-            width: "200px",
             textAlign: "center",
+            whiteSpace: "nowrap",
           }}>
             {formatDateStr(selectedDate)}
+            {blocks.length > 0 && (
+              <span style={{
+                fontSize: "11px",
+                opacity: 0.4,
+                marginLeft: "8px",
+                letterSpacing: "0",
+              }}>
+                {blocks.length} block{blocks.length !== 1 ? "s" : ""} · {blocks.reduce((s, b) => s + (b.endSlot - b.startSlot) * SLOT_MINUTES / 60, 0).toFixed(1)}h
+              </span>
+            )}
           </div>
           <div
             onClick={() => { if (!isToday) navigateDate(addDays(selectedDate, 1)); }}
@@ -2582,7 +3539,7 @@ export default function Meridian() {
             background: isLocked ? "transparent" : t.timelineBg,
             border: isLocked ? "none" : t.timelineBorder,
             transition: "all 0.5s ease",
-            overflow: "hidden",
+            overflow: tagPopoverBlockId ? "visible" : "hidden",
           }}
         >
           {/* Grid lines (edit mode only) */}
@@ -2708,13 +3665,21 @@ export default function Meridian() {
                 key={block.id}
                 data-block="true"
                 onMouseDown={(e) => {
-                  if (!isLocked && !isEditing && !e.target.closest("[data-resize]")) {
+                  if (!isLocked && !e.target.closest("[data-resize]") && !e.target.closest("input")) {
                     startReorder(e, block.id);
                   }
                 }}
                 onDoubleClick={() => {
                   if (!isLocked) setEditingBlockId(block.id);
                 }}
+                onMouseEnter={!isLocked ? (e) => {
+                  e.currentTarget.querySelectorAll("[data-hover-show]").forEach(c => { c.style.opacity = "1"; });
+                } : undefined}
+                onMouseLeave={!isLocked ? (e) => {
+                  e.currentTarget.querySelectorAll("[data-hover-show]").forEach(c => {
+                    if (c.dataset.keepVisible !== "true") c.style.opacity = "0";
+                  });
+                } : undefined}
                 style={{
                   position: "absolute",
                   ...(isVertical
@@ -2795,14 +3760,15 @@ export default function Meridian() {
                   </>
                 )}
 
-                {/* Delete button (edit mode) */}
+                {/* Delete button (edit mode, corner peek) */}
                 {!isLocked && (
                   <div
+                    data-hover-show="true"
                     onClick={(e) => { e.stopPropagation(); deleteBlock(block.id); }}
                     style={{
                       position: "absolute",
-                      top: "4px",
-                      right: "6px",
+                      top: "3px",
+                      right: "3px",
                       width: "16px",
                       height: "16px",
                       borderRadius: "50%",
@@ -2813,11 +3779,10 @@ export default function Meridian() {
                       cursor: "pointer",
                       fontSize: "10px",
                       color: t.deleteX,
-                      opacity: 0.5,
+                      opacity: 0,
                       zIndex: 4,
+                      transition: "opacity 0.15s ease",
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.opacity = "1"}
-                    onMouseLeave={(e) => e.currentTarget.style.opacity = "0.5"}
                   >
                     ×
                   </div>
@@ -2837,9 +3802,8 @@ export default function Meridian() {
                       display: "flex", flexDirection: "column", alignItems: "center",
                       zIndex: 5,
                       boxShadow: isNarrow ? t.blockEditShadow : "none",
+                      pointerEvents: "none",
                     }}
-                    onMouseDown={(e) => { if (e.target !== e.currentTarget) return; e.preventDefault(); }}
-                    onClick={(e) => e.stopPropagation()}
                   >
                     <input
                       ref={inputRef}
@@ -2873,6 +3837,7 @@ export default function Meridian() {
                         }
                       }}
                       style={{
+                        pointerEvents: "auto",
                         background: "transparent",
                         border: "none",
                         outline: "none",
@@ -2886,6 +3851,7 @@ export default function Meridian() {
                         flexShrink: 0,
                         padding: "6px 0 4px",
                       }}
+                      onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                     />
                   </div>
@@ -2946,6 +3912,8 @@ export default function Meridian() {
                 {/* Tag indicator dot (edit mode, hover-triggered) */}
                 {!isLocked && tags.length > 0 && (
                   <div
+                    data-hover-show="true"
+                    data-keep-visible={tagPopoverBlockId === block.id ? "true" : "false"}
                     className="tag-dot-trigger"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3025,6 +3993,7 @@ export default function Meridian() {
                 {tags.map((tg) => {
                   const tagColor = activeColors[tg.colorIndex % activeColors.length];
                   const isSelected = popoverBlock.tagId === tg.id;
+                  const dotColor = theme === "light" ? tagColor.lightBg : tagColor.bg;
                   return (
                     <div
                       key={tg.id}
@@ -3046,24 +4015,28 @@ export default function Meridian() {
                         padding: "5px 10px",
                         borderRadius: "6px",
                         cursor: "pointer",
-                        background: isSelected
-                          ? (theme === "light" ? `${tagColor.lightBg}` : `${tagColor.bg}40`)
-                          : "transparent",
+                        background: "transparent",
                         transition: "background 0.1s ease",
                       }}
                       onMouseEnter={(e) => {
-                        if (!isSelected) e.currentTarget.style.background = theme === "light" ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)";
+                        e.currentTarget.style.background = theme === "light" ? "rgba(0,0,0,0.04)" : "rgba(255,255,255,0.06)";
+                        const dot = e.currentTarget.querySelector("[data-tag-dot]");
+                        if (dot && !isSelected) dot.style.background = `${dotColor}60`;
                       }}
                       onMouseLeave={(e) => {
-                        if (!isSelected) e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.background = "transparent";
+                        const dot = e.currentTarget.querySelector("[data-tag-dot]");
+                        if (dot && !isSelected) dot.style.background = "transparent";
                       }}
                     >
-                      <div style={{
+                      <div data-tag-dot="true" style={{
                         width: "10px",
                         height: "10px",
                         borderRadius: "50%",
-                        background: theme === "light" ? tagColor.lightBg : tagColor.bg,
+                        border: `1.5px solid ${dotColor}`,
+                        background: isSelected ? dotColor : "transparent",
                         flexShrink: 0,
+                        transition: "background 0.1s ease",
                       }} />
                       <span style={{
                         fontSize: "11px",
@@ -3073,9 +4046,6 @@ export default function Meridian() {
                       }}>
                         {tg.name}
                       </span>
-                      {isSelected && (
-                        <span style={{ marginLeft: "auto", fontSize: "11px", color: t.blockLabelText }}>✓</span>
-                      )}
                     </div>
                   );
                 })}
@@ -3224,6 +4194,7 @@ export default function Meridian() {
           maxWidth: tags.length <= 2 ? "700px" : `${tags.length * 340}px`,
           width: "100%",
           margin: "0 auto",
+          overflow: "hidden",
           transition: "max-width 0.3s ease",
         }}>
           <div style={{
@@ -3231,9 +4202,59 @@ export default function Meridian() {
             marginBottom: "8px",
             transition: "border-color 0.5s ease",
           }} />
-          <NotepadArea theme={t} tags={tags} activeColors={activeColors} onCloudSave={saveToCloud} notesVersion={notesVersion} isMuted={isMuted} setIsMuted={setIsMuted} />
+          <NotepadArea theme={t} tags={tags} activeColors={activeColors} blocks={blocks} onCloudSave={saveToCloud} notesVersion={notesVersion} isMuted={isMuted} setIsMuted={setIsMuted} />
         </div>
       )}
+
+      {/* Upcoming days drawer (desktop only) */}
+      {!isVertical && (
+        <UpcomingDrawer
+          open={drawerOpen}
+          onToggle={() => { setDrawerOpen(prev => !prev); setExpandedDayIndex(null); }}
+          dragDelta={drawerDragStartY !== null ? drawerDragDelta : 0}
+          onDragStart={handleDrawerDragStart}
+          days={upcomingDaysData}
+          expandedIndex={expandedDayIndex}
+          onExpandToggle={(i) => setExpandedDayIndex(prev => prev === i ? null : i)}
+          hoursStart={hoursStart}
+          hoursEnd={hoursEnd}
+          totalSlots={slots}
+          t={t}
+          activeColors={activeColors}
+          isInk={t.isInk}
+          isLocked={isLocked}
+          mouseMoving={mouseMoving}
+          onNavigateDate={(dateStr) => { navigateDate(dateStr); setDrawerOpen(false); setExpandedDayIndex(null); }}
+          bodyRef={drawerBodyRef}
+          theme={theme}
+          tags={tags}
+          editBlocks={drawerEditBlocks}
+          editingBlockId={drawerEditingBlockId}
+          hoveredSlot={drawerHoveredSlot}
+          onTimelineClick={handleDrawerTimelineClick}
+          onTimelineMouseMove={handleDrawerTimelineMouseMove}
+          onTimelineMouseLeave={() => setDrawerHoveredSlot(null)}
+          onStartResize={startDrawerResize}
+          onStartReorder={startDrawerReorder}
+          onDeleteBlock={deleteDrawerBlock}
+          onSetEditingBlockId={setDrawerEditingBlockId}
+          onUpdateBlockTitle={updateDrawerBlockTitle}
+          onSetTagPopoverBlockId={setDrawerTagPopoverBlockId}
+          tagPopoverBlockId={drawerTagPopoverBlockId}
+          onAssignTag={assignDrawerBlockTag}
+          timelineRefCallback={(el) => { drawerTimelineRef.current = el; }}
+          inputRef={drawerInputRef}
+          isDragging={!!drawerReorderState || !!drawerResizeState}
+        />
+      )}
+
+      {/* Keyframe for drawer card animation */}
+      <style>{`
+        @keyframes drawerCardSlideIn {
+          from { opacity: 0; transform: translateY(-8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
 
       {/* Settings panel */}
       <div
