@@ -593,9 +593,31 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
     if (li.querySelector('input[type="checkbox"]')) return;
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.style.cssText = "margin-right:6px;cursor:pointer;vertical-align:middle;";
+    cb.style.cssText = "margin-right:10px;cursor:pointer;vertical-align:middle;";
     cb.addEventListener("change", handleCheckboxChange);
     li.insertBefore(cb, li.firstChild);
+  }
+
+  // Style nested bullet lists (circle) and numbered lists (lower-alpha)
+  function styleNestedLists() {
+    if (!editorRef.current) return;
+    // Nested ULs (non-checkbox): top-level = disc, nested = circle
+    editorRef.current.querySelectorAll("ul").forEach((ul) => {
+      if (ul.querySelector(':scope > li > input[type="checkbox"]')) return; // skip checkbox lists
+      const parentUl = ul.parentElement?.closest("ul");
+      if (parentUl && !parentUl.querySelector(':scope > li > input[type="checkbox"]')) {
+        ul.style.listStyleType = "circle";
+      }
+    });
+    // Nested OLs: top-level = decimal, nested = lower-alpha
+    editorRef.current.querySelectorAll("ol").forEach((ol) => {
+      const parentOl = ol.parentElement?.closest("ol");
+      if (parentOl) {
+        ol.style.listStyleType = "lower-alpha";
+      } else {
+        ol.style.listStyleType = "decimal";
+      }
+    });
   }
 
   function toggleCheckboxList() {
@@ -621,7 +643,10 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
     } else if (li && li.closest("ul")) {
       // In a plain UL — add checkboxes to all items
       const ul = li.closest("ul");
-      ul.querySelectorAll("li").forEach(addCheckboxToLi);
+      ul.querySelectorAll("li").forEach((item) => {
+        addCheckboxToLi(item);
+        item.style.listStyleType = "none";
+      });
       ul.style.listStyle = "none";
       ul.style.paddingLeft = "20px";
       checkboxModeRef.current = true;
@@ -637,7 +662,10 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
         if (newLi) {
           const ul = newLi.closest("ul");
           if (ul) {
-            ul.querySelectorAll("li").forEach(addCheckboxToLi);
+            ul.querySelectorAll("li").forEach((item) => {
+              addCheckboxToLi(item);
+              item.style.listStyleType = "none";
+            });
             ul.style.listStyle = "none";
             ul.style.paddingLeft = "20px";
           }
@@ -695,7 +723,54 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
 
   function handleKeyDown(e) {
     const k = e.key;
-    if (["Shift", "Control", "Alt", "Meta", "CapsLock", "Tab"].includes(k)) return;
+    if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(k)) return;
+
+    // Tab indent/outdent for list items (checkboxes, bullets, numbers)
+    if (k === "Tab" && !e.metaKey && !e.ctrlKey) {
+      const sel = window.getSelection();
+      const li = sel?.anchorNode?.nodeType === 3
+        ? sel.anchorNode.parentElement?.closest("li")
+        : sel?.anchorNode?.closest?.("li");
+      if (li) {
+        e.preventDefault();
+        const isCheckbox = !!li.querySelector('input[type="checkbox"]');
+        if (e.shiftKey) {
+          document.execCommand("outdent");
+        } else {
+          document.execCommand("indent");
+        }
+        requestAnimationFrame(() => {
+          if (isCheckbox) {
+            // Find the outermost checkbox ul
+            let rootUl = li.closest("ul");
+            while (rootUl?.parentElement?.closest("ul")) {
+              const outer = rootUl.parentElement.closest("ul");
+              if (!outer) break;
+              rootUl = outer;
+            }
+            if (rootUl) {
+              rootUl.querySelectorAll("li").forEach((item) => {
+                addCheckboxToLi(item);
+                item.style.listStyleType = "none";
+              });
+              rootUl.style.listStyle = "none";
+              rootUl.style.paddingLeft = "20px";
+              rootUl.querySelectorAll("ul").forEach((nested) => {
+                nested.style.listStyle = "none";
+                nested.style.paddingLeft = "20px";
+              });
+            }
+          }
+          // Style nested bullet and numbered lists
+          styleNestedLists();
+          saveContent();
+          updateFmtState();
+        });
+        return;
+      }
+      // Not in a list — let Tab do default behavior
+      return;
+    }
 
     // Slash menu navigation
     if (slashMenu) {
@@ -804,9 +879,18 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
         const parentEl = textNode.parentElement;
         const isInList = parentEl?.closest("li") || parentEl?.closest("ul") || parentEl?.closest("ol");
         if (!isInList) {
+          // Helper: select shortcut text and delete via execCommand to preserve cursor position
+          const deleteShortcutText = () => {
+            const r = document.createRange();
+            r.setStart(textNode, 0);
+            r.setEnd(textNode, sel.anchorOffset);
+            sel.removeAllRanges();
+            sel.addRange(r);
+            document.execCommand("delete");
+          };
           if (beforeSpace === "-") {
             e.preventDefault();
-            textNode.textContent = "";
+            deleteShortcutText();
             document.execCommand("insertUnorderedList");
             saveContent();
             requestAnimationFrame(updateFmtState);
@@ -815,7 +899,7 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
           }
           if (beforeSpace === "1.") {
             e.preventDefault();
-            textNode.textContent = "";
+            deleteShortcutText();
             document.execCommand("insertOrderedList");
             saveContent();
             requestAnimationFrame(updateFmtState);
@@ -824,7 +908,7 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
           }
           if (beforeSpace === "[]") {
             e.preventDefault();
-            textNode.textContent = "";
+            deleteShortcutText();
             toggleCheckboxList();
             saveContent();
             requestAnimationFrame(updateFmtState);
@@ -843,11 +927,15 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
   function handleCheckboxChange(e) {
     const cb = e.target;
     const line = cb.parentElement;
-    if (line) {
-      if (cb.checked) {
+    if (cb.checked) {
+      cb.setAttribute("checked", "");
+      if (line) {
         line.style.textDecoration = "line-through";
         line.style.opacity = "0.5";
-      } else {
+      }
+    } else {
+      cb.removeAttribute("checked");
+      if (line) {
         line.style.textDecoration = "none";
         line.style.opacity = "1";
       }
@@ -855,15 +943,36 @@ function NotepadColumn({ theme: t, columnKey, onSave, notesVersion, showToolbar 
     saveContent();
   }
 
-  // Re-attach checkbox listeners after load
+  // Re-attach checkbox listeners after load (re-runs on content reload)
   useEffect(() => {
     if (!editorRef.current) return;
     const checkboxes = editorRef.current.querySelectorAll('input[type="checkbox"]');
     checkboxes.forEach((cb) => {
       cb.style.cursor = "pointer";
       cb.addEventListener("change", handleCheckboxChange);
+      // Restore visual state from saved checked attribute
+      const line = cb.parentElement;
+      if (line) {
+        line.style.listStyleType = "none";
+        if (cb.hasAttribute("checked")) {
+          cb.checked = true;
+          line.style.textDecoration = "line-through";
+          line.style.opacity = "0.5";
+        } else {
+          line.style.textDecoration = "none";
+          line.style.opacity = "1";
+        }
+      }
     });
-  }, []);
+    // Ensure all checkbox ULs have no bullets
+    editorRef.current.querySelectorAll("ul").forEach((ul) => {
+      if (ul.querySelector('input[type="checkbox"]')) {
+        ul.style.listStyle = "none";
+      }
+    });
+    // Style nested bullet/numbered lists
+    styleNestedLists();
+  }, [notesVersion, columnKey]);
 
   const fmtBtn = (label, title, action, isActive) => (
     <div
@@ -1475,19 +1584,20 @@ function UpcomingDayCard({ day, index, expanded, onToggle, hoursStart, hoursEnd,
                     <input
                       ref={inputRef}
                       value={b.title}
+                      placeholder="New Block"
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => onUpdateBlockTitle(b.id, e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") onSetEditingBlockId(null);
                         if (e.key === "Escape") {
-                          if (b.title === "New Block" || b.title === "") onDeleteBlock(b.id);
+                          if (b.title === "") onDeleteBlock(b.id);
                           else onSetEditingBlockId(null);
                         }
                       }}
                       onBlur={(e) => {
                         if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("[data-drawer-block]")) return;
-                        if (b.title === "New Block" || b.title === "") onDeleteBlock(b.id);
+                        if (b.title === "") onDeleteBlock(b.id);
                         else onSetEditingBlockId(null);
                       }}
                       style={{
@@ -1553,7 +1663,7 @@ function UpcomingDayCard({ day, index, expanded, onToggle, hoursStart, hoursEnd,
               return (
                 <div
                   data-tag-popover="true"
-                  onMouseDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
                   onClick={(e) => e.stopPropagation()}
                   style={{
                     position: "absolute",
@@ -2449,7 +2559,7 @@ export default function Meridian() {
     pushSyncTimerRef.current = setTimeout(async () => {
       // Find newly created blocks (in current but not previous, no googleEventId yet)
       const prevIds = new Set(prevBlocks.map((b) => b.id));
-      const created = blocks.filter((b) => !prevIds.has(b.id) && !b.googleEventId && b.title !== "New Block");
+      const created = blocks.filter((b) => !prevIds.has(b.id) && !b.googleEventId && b.title !== "");
 
       // Find deleted blocks that had a googleEventId
       const currIds = new Set(blocks.map((b) => b.id));
@@ -2743,7 +2853,6 @@ export default function Meridian() {
   useEffect(() => {
     if (editingBlockId && inputRef.current) {
       inputRef.current.focus();
-      inputRef.current.select();
     }
   }, [editingBlockId]);
 
@@ -2854,7 +2963,7 @@ export default function Meridian() {
     const tagColor = defaultTagId ? tags.find(tg => tg.id === defaultTagId)?.colorIndex : undefined;
     const newBlock = {
       id,
-      title: "New Block",
+      title: "",
       startSlot: empty.start,
       endSlot: empty.end,
       colorIndex: tagColor != null ? tagColor : getNextColor(drawerEditBlocks),
@@ -2974,7 +3083,6 @@ export default function Meridian() {
   useEffect(() => {
     if (drawerEditingBlockId && drawerInputRef.current) {
       drawerInputRef.current.focus();
-      drawerInputRef.current.select();
     }
   }, [drawerEditingBlockId]);
 
@@ -3013,7 +3121,7 @@ export default function Meridian() {
     const tagColor = defaultTagId ? tags.find((tg) => tg.id === defaultTagId)?.colorIndex : undefined;
     const newBlock = {
       id,
-      title: "New Block",
+      title: "",
       startSlot: empty.start,
       endSlot: empty.end,
       colorIndex: tagColor != null ? tagColor : getNextColor(blocks),
@@ -3707,7 +3815,7 @@ export default function Meridian() {
                   transition: resizeState || reorderState ? "none" : "all 0.3s ease",
                   boxShadow: isLocked
                     ? (t.isInk || theme === "dark" ? "none" : `0 2px 12px ${blockBg}33, inset 0 1px 0 ${t.blockInsetHighlight}`)
-                    : t.blockEditShadow,
+                    : (theme === "dark" ? "none" : t.blockEditShadow),
                   zIndex: reorderState?.blockId === block.id ? 20 : (isEditing ? 15 : 2),
                   overflow: isEditing ? "visible" : "hidden",
                 }}
@@ -3788,26 +3896,12 @@ export default function Meridian() {
                   </div>
                 )}
 
-                {/* Block label / editing overlay */}
+                {/* Block label / editing input */}
                 {isEditing ? (
-                  <div
-                    style={{
-                      position: "absolute", top: 0, bottom: 0,
-                      left: "50%", transform: "translateX(-50%)",
-                      minWidth: isNarrow ? "160px" : "100%",
-                      width: "100%",
-                      backdropFilter: "blur(8px)",
-                      background: theme === "light" ? "rgba(240,232,223,0.95)" : theme === "ink" ? "rgba(245,243,240,0.95)" : "rgba(26,26,30,0.95)",
-                      borderRadius: "6px",
-                      display: "flex", flexDirection: "column", alignItems: "center",
-                      zIndex: 5,
-                      boxShadow: isNarrow ? t.blockEditShadow : "none",
-                      pointerEvents: "none",
-                    }}
-                  >
                     <input
                       ref={inputRef}
                       value={block.title}
+                      placeholder="New Block"
                       onChange={(e) =>
                         setBlocks((prev) =>
                           prev.map((b) => (b.id === block.id ? { ...b, title: e.target.value } : b))
@@ -3816,7 +3910,7 @@ export default function Meridian() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter") setEditingBlockId(null);
                         if (e.key === "Escape") {
-                          if (block.title === "New Block" || block.title === "") {
+                          if (block.title === "") {
                             deleteBlock(block.id);
                           } else {
                             setEditingBlockId(null);
@@ -3824,10 +3918,11 @@ export default function Meridian() {
                         }
                       }}
                       onBlur={(e) => {
-                        // Don't close if clicking inside the same block (e.g. tag selector)
-                        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("[data-block]")) return;
-                        // Delete blocks with no meaningful title
-                        if (block.title === "" || block.title === "New Block") {
+                        // Don't close if clicking inside the same block or tag popover
+                        if (e.relatedTarget && e.relatedTarget.closest &&
+                            (e.relatedTarget.closest("[data-block]") || e.relatedTarget.closest("[data-tag-popover]"))) return;
+                        // Delete blocks with no title
+                        if (block.title === "") {
                           deleteBlock(block.id);
                         } else {
                           // Use setTimeout to avoid overriding editingBlockId if the user
@@ -3837,24 +3932,25 @@ export default function Meridian() {
                         }
                       }}
                       style={{
-                        pointerEvents: "auto",
+                        position: "absolute", top: 0, bottom: 0,
+                        left: "50%", transform: "translateX(-50%)",
+                        minWidth: isNarrow ? "160px" : "100%",
+                        width: "100%",
                         background: "transparent",
                         border: "none",
                         outline: "none",
+                        borderRadius: "6px",
                         color: t.inputText,
                         fontSize: isNarrow ? "10px" : "13px",
                         fontFamily: "'Outfit', sans-serif",
                         fontWeight: 500,
                         textAlign: "center",
-                        width: "90%",
                         caretColor: t.caretColor,
-                        flexShrink: 0,
-                        padding: "6px 0 4px",
+                        zIndex: 5,
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                     />
-                  </div>
                 ) : (
                   <div style={{
                     display: "flex", flexDirection: "column", alignItems: "center",
@@ -3962,7 +4058,7 @@ export default function Meridian() {
             return (
               <div
                 data-tag-popover="true"
-                onMouseDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
                 onClick={(e) => e.stopPropagation()}
                 style={{
                   position: "absolute",

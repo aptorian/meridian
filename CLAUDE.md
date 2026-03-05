@@ -4,12 +4,12 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 ## Stack
 - React 19 + Vite 7
 - Supabase (auth + Postgres database + Edge Functions + Realtime)
-- No component library — custom CSS
+- No component library — custom CSS, all inline styles
 - Electron 40 for desktop builds (Windows + macOS)
 - Deployed on Vercel at meridian.aptorian.com
 
 ## Architecture
-- Single-file app: `src/App.jsx` (~3500 lines) contains all UI, state, and logic
+- Single-file app: `src/App.jsx` (~4900 lines) contains all UI, state, and logic
 - `src/supabase.js` — Supabase client init (defensive: returns null if env vars missing/invalid)
 - `src/main.jsx` — React entry point
 - `supabase/functions/google-calendar/index.ts` — Edge Function for Google Calendar API proxy
@@ -19,31 +19,32 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - Debounced cloud save (1s) mirrors localStorage save pattern
 
 ## Key Concepts
-- **Blocks**: time blocks on the timeline, stored as JSON array per date
-- **Tags**: user-created categories (Work, Personal, etc.) with color assignment; blocks can be tagged
+- **Blocks**: `{ id, title, startSlot, endSlot, colorIndex, tagId, googleEventId }` — 15-min slots on main timeline
+- **Tags**: user-created categories with color assignment; blocks can be tagged; stored in `timeblock-tags`
 - **Past days**: navigate to previous dates; blocks stored as `{ "YYYY-MM-DD": [blocks] }` in localStorage and `user_blocks` table
 - **Themes**: light, dark, ink — with dark variant sub-themes (coolMineral, warmDesert, mutedBotanical)
-- **Lock mode**: prevents accidental edits; long-press padlock (1020ms lock, 194ms unlock), SVG progress ring
-- **Collapsing icon tray**: when locked, theme/settings/mute icons collapse into lock; lock fades to 0.15 opacity, rises on mouse movement
-- **Settings panel**: day range, tags, quote categories, desktop app downloads, account, Google Calendar (beta)
+- **Lock mode**: long-press padlock to toggle (1020ms lock, 194ms unlock), SVG progress ring, NOT a click
+- **Collapsing icon tray**: when locked, theme/settings/mute icons collapse (width→0); lock fades to 0.15 opacity
+- **Settings panel**: day range, tags, quote categories, desktop downloads, account, Google Calendar (beta)
 - **Quotes**: date-locked inspirational quotes (hash of selectedDate), with category filtering
-- **Notepad**: per-tag columns (side-by-side, expanding container), slash commands, contentEditable rich text
+- **Notepad**: per-tag columns, contentEditable rich text, slash commands, 500ms debounced save
 - **Frosted block editor**: double-click block → full blur overlay with title input + tag selector
-- **Lane stacking**: overlapping blocks/calendar events get assigned to lanes (side-by-side rendering)
+- **Tag popover**: rendered at timeline level (NOT inside block DOM) with `data-tag-popover` attribute
+- **Lane stacking**: `computeLanes()` for overlapping blocks/calendar events (side-by-side rendering)
+- **Drawer**: upcoming blocks view with 1-hour grid, inline editing (no overlay)
+
+## Important Code Patterns
+- Block onBlur handler deletes blocks with title "" or "New Block" — any UI that causes blur during editing must use `e.preventDefault()` on mouseDown
+- Tag popovers exist in two places: main timeline (~line 4074) and drawer (~line 1664)
+- `TimelineRow` is a sub-component defined inside App.jsx
+- ~40 useState hooks in main Meridian component
+- All styles are inline (no CSS modules, no styled-components)
 
 ## Database
 - Supabase project ref: `dginhfxbndzfbqljcocz`
-- `user_data` table: blocks (jsonb), notes, theme, dark_variant, hours_start, hours_end, muted, quote_categories, tags (jsonb), calendar_enabled, calendar_ids (jsonb), google_refresh_token, updated_at
-- `user_blocks` table: per-date block storage for past days (user_id, date, blocks jsonb)
-- Row-level security on both tables (users can only access own data)
-
-## Google Calendar Integration (Beta — not yet working)
-- OAuth re-auth with `calendar.events` scope via `connectCalendar()`
-- Edge Function at `supabase/functions/google-calendar/index.ts` proxies Google Calendar API
-- Edge Function requires env secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-- Token flow: `onAuthStateChange` captures `provider_token` + `provider_refresh_token` → stored in localStorage → refresh token persisted to `user_data.google_refresh_token`
-- **Known issue**: Edge Function returns 401 "Invalid JWT" from Supabase gateway. Deployed with `--no-verify-jwt` flag as workaround. Root cause: Authorization header may not be reaching the gateway correctly after OAuth re-redirect. Needs further debugging.
-- Deploy command: `cd E:\Repos\meridian-clone; supabase functions deploy google-calendar --no-verify-jwt --project-ref dginhfxbndzfbqljcocz`
+- `user_data` table: blocks, notes, theme, dark_variant, hours_start, hours_end, muted, quote_categories, tags, calendar_enabled, calendar_ids, google_refresh_token, updated_at
+- `user_blocks` table: per-date block storage (user_id, date, blocks jsonb)
+- Row-level security on both tables
 
 ## Notepad Slash Commands
 - `/1` through `/3` — heading sizes
@@ -57,49 +58,33 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - `VITE_SUPABASE_URL` — Supabase project URL
 - `VITE_SUPABASE_ANON_KEY` — Supabase publishable anon key
 - Set in `.env` locally (gitignored) and in Vercel project settings
-- These are baked in at build time via `import.meta.env`
 
 ## Conventions
 - Single-file components where possible
 - Obsidian-inspired warm color palette
 - Dark theme is default
-- 8 block colors: rose, sand, amber, sage, teal, steel, plum, mauve (+ 3 variant sets)
+- 8 block colors: rose, sand, amber, sage, teal, steel, plum, mauve (+ 3 variant sets for dark themes)
 - localStorage keys prefixed with `timeblock-`
-- All inline styles (no CSS modules or styled-components)
+- All inline styles
 
 ## CI/CD & Releases
-- **Vercel**: auto-deploys from `main` branch (web app at meridian.aptorian.com)
-- **GitHub Actions** (`.github/workflows/release.yml`): "Build & Release" workflow
-  - Triggered automatically by pushing any `v*` tag to GitHub
-  - Builds **both** macOS .dmg and Windows .exe via matrix (macos-latest + windows-latest runners)
-  - Uploads both installers to the GitHub Release automatically
-  - Uses `softprops/action-gh-release@v2` with `generate_release_notes: true`
-  - Supabase env vars injected from GitHub repo secrets during Vite build step
-  - **DO NOT build desktop apps locally** — just push the tag and CI handles everything
-- **Release process** (version bump → all platforms):
-  1. Bump `version` in `package.json`, commit and push to `main`
-  2. Create release: `gh release create v1.x.x --title "v1.x.x" --generate-notes`
-     - This creates the git tag, which triggers the CI workflow
-  3. CI builds both .dmg and .exe and attaches them to the release automatically
-  4. Vercel deploys the web app from the same `main` push
-  5. Existing desktop users get update prompts via the in-app update checker (`electron/main.js` checks GitHub releases API on launch)
-- Download links in Settings point to `github.com/aptorian/meridian/releases/latest/download/`
-
-## External Services
-- **Supabase**: Auth (Google OAuth) + database + Edge Functions + Realtime — dashboard at supabase.com
-- **Vercel**: Hosting + auto-deploys from `main` branch
-- **Google Cloud Console**: OAuth client config (consent screen, redirect URIs, Calendar API enabled)
-- **GitHub**: `https://github.com/aptorian/meridian`
+- **Vercel**: auto-deploys from `main` branch
+- **GitHub Actions** (`.github/workflows/release.yml`): `v*` tag → builds macOS .dmg + Windows .exe → GitHub Release
+- **DO NOT build desktop apps locally** — push tag and CI handles everything
+- Release: bump version in package.json, commit, then `gh release create v1.x.x --title "v1.x.x" --generate-notes`
 
 ## Dev Setup
-- Working directory (Mac): `/Users/adam/Downloads/meridian`
 - Working directory (Windows): `E:\Repos\meridian-clone`
 - `npm run dev` — Vite dev server (port 5173)
-- `npm run build` — Production build (web only)
+- `npm run build` — Production build
 - `npm run dev:electron` — Electron + Vite concurrently
-- `npm run build:electron` — Local Electron build (use CI instead for releases)
 
 ### Windows-specific notes
-- PowerShell on Windows: use `;` not `&&` to chain commands
-- Bash tool can access paths via `cd "E:/Repos/meridian-clone"` with `export PATH="/c/Program Files/nodejs:$PATH"`
-- PowerShell via: `"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "cd E:\Repos\meridian-clone; ..."`
+- Bash: `export PATH="/c/Program Files/nodejs:$PATH"` before npm/node commands
+- PowerShell: `"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "..."`
+- PowerShell uses `;` not `&&` for chaining
+
+## Known Issues
+- Google Calendar: 401 "Invalid JWT" from Supabase gateway — deployed with `--no-verify-jwt` as workaround
+- Electron build fails locally (electron-builder npm JSON parse bug) — always use CI
+- Drawer new block click offset near hour grid lines (Math.round boundary issue)
