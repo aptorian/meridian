@@ -37,7 +37,7 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - Block onBlur handler deletes blocks with title "" or "New Block" — any UI that causes blur during editing must use `e.preventDefault()` on mouseDown
 - Tag popovers exist in two places: main timeline (~line 4074) and drawer (~line 1664)
 - `TimelineRow` is a sub-component defined inside App.jsx
-- ~40 useState hooks in main Meridian component
+- 47 useState hooks in main Meridian component
 - All styles are inline (no CSS modules, no styled-components)
 
 ## Database
@@ -64,7 +64,7 @@ A time-blocking web app. Horizontal timeline for desktop, vertical for mobile.
 - Obsidian-inspired warm color palette
 - Dark theme is default
 - 8 block colors: rose, sand, amber, sage, teal, steel, plum, mauve (+ 3 variant sets for dark themes)
-- localStorage keys prefixed with `timeblock-`
+- localStorage keys prefixed with `timeblock-` (includes `timeblock-cal-enabled`, `timeblock-cal-ids`, `timeblock-cal-provider-token`, `timeblock-cal-provider-refresh-token` for Google Calendar)
 - All inline styles
 
 ## CI/CD & Releases
